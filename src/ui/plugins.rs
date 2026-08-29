@@ -114,6 +114,18 @@ fn install_controls(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
         }
         ui.add_space(2.0);
         theme::subtle(ui, palette, "…or drag a .wasm file onto the window.");
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            theme::subtle(ui, palette, "The catalog lives at");
+            if theme::text(ui, "usewoofer.com", theme::medium(13.0), palette.accent)
+                .interact(egui::Sense::click())
+                .clicked()
+            {
+                app.actions
+                    .push(Action::OpenUrl("https://usewoofer.com".into()));
+            }
+            theme::subtle(ui, palette, "— every listing is reviewed by hand.");
+        });
     });
 }
 

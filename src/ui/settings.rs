@@ -31,7 +31,7 @@ fn section(
         .corner_radius(CornerRadius::same(theme::RADIUS + 2))
         .inner_margin(Margin::symmetric(20, 16))
         .show(ui, |ui| {
-            ui.set_width(ui.available_width().min(760.0));
+            ui.set_min_width(ui.available_width());
             add_contents(ui);
         });
     ui.add_space(8.0);
