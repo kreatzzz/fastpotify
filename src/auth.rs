@@ -33,9 +33,9 @@ use tokio::sync::watch;
 pub const PLAYBACK_CLIENT_ID: &str = "65b708073fc0480ea92a077233ca87bd";
 pub const PLAYBACK_REDIRECT_PORT: u16 = 8898;
 
-/// The public Web API application shared by spotify-player, ncspot, and
-/// Omarchy Spotify. A personal application id can replace it in Settings.
-pub const DEFAULT_WEB_CLIENT_ID: &str = "d420a117a32841c2b3474932e49fb54b";
+/// This fork's own Web API application. Rate limits belong to it alone, so
+/// a busy upstream or a busy sibling client never lands here.
+pub const DEFAULT_WEB_CLIENT_ID: &str = "1f3066de96254093865b614999a5847e";
 pub const WEB_REDIRECT_PORT: u16 = 8989;
 
 pub const REDIRECT_PATH: &str = "/login";
