@@ -97,7 +97,100 @@ Everything else — HTTP, timing, caching policy, retries — is host work.
 - **storage** — namespaced KV, 50 MB quota; the plugin's cache lives
   here.
 
-## 6. Clash resolution — when plugins overlap
+## 6. Surfaces and their arities
+
+Conflicts are prevented, not resolved after the fact: every extension
+surface declares its **arity** — how many plugins may hold it, and who
+breaks a tie — at API-design time.
+
+| Arity | Meaning | Ties are broken by |
+| --- | --- | --- |
+| **single-active** | One plugin holds the slot; it answers a question | The user, via an explicit picker |
+| **multi-active** | Many plugins coexist, each in a namespaced slot | The user, for order and visibility only |
+| **merged** | Many contribute; the host merges by fixed policy | The host, deterministically (reserved; none in v1) |
+
+### The catalog, by version
+
+**v1 — data and control**
+
+| Surface | Arity |
+| --- | --- |
+| Lyrics provider | single-active |
+| Translation provider (translate) | single-active |
+| Translation provider (romanize) | single-active |
+| Commands (tray, palette, control-CLI verbs) | multi-active |
+| Settings entries | additive, namespaced |
+| Storage | private |
+
+**v1.5 — UI surfaces and events**
+
+| Surface | Arity |
+| --- | --- |
+| Sidebar panels | multi-active, stacked |
+| Track context-menu items | multi-active |
+| Player-bar extras | multi-active, fixed-size slots |
+| `on_event` (now-playing changes) | multi-active |
+| Polling scheduler | multi-active, host floor of 1 s |
+
+**v2 — real-time and trust**
+
+| Surface | Arity |
+| --- | --- |
+| Websocket relay (host-owned sockets) | multi-active |
+| Secrets (host-managed tokens) | private |
+| Now-playing "featured" widget | single-active |
+
+### The right sidebar, conflict-free
+
+The sidebar is not a slot to grab; it is a **stack of sections**, one per
+`panel:sidebar` plugin, in the manner of a code editor's side dock:
+
+- **Order** is the user's: drag to reorder, persisted; install order is
+  the default. No plugin can fight for position.
+- **Space** is guarded: sections collapse, and a collapsed section does
+  not execute its plugin at all. Per-section caps — a widget-count
+  budget and a nesting depth — keep five installed panels from making
+  the interface sweat.
+- **Visibility** is declarative: a plugin may say "only while something
+  is playing", and the host evaluates the condition without running it.
+
+### The `panel` widget vocabulary (v1.5, first cut)
+
+Eleven widgets, each a JSON node; the host owns rendering, fonts,
+spacing, and the image cache.
+
+`row` · `column` · `list` · `text` (weight, size) · `badge` ·
+`avatar` (URL, fetched and cached by the host's art loader) · `button`
+(action lands back as a command or an event) · `text-input` ·
+`progress` · `divider` · `spacer`
+
+Hard limits: at most 200 widgets per section, nesting at most 5 deep,
+strings bounded, images only through the host loader. A friends sidebar
+(a list of rows with avatars, badges, and one button each) fits in
+roughly 60 widgets for 20 friends — the vocabulary is sized so the
+interesting plugins are expressible and the expensive ones are not.
+
+### What gets built (the catalog that seeds the marketplace)
+
+1. **Providers** — lyrics, translation (DeepL with the user's own key,
+   LibreTranslate self-hosted), romanization.
+2. **Zero-interface utilities** — Last.fm scrobbling, Discord rich
+   presence, a sleep timer, lyric export: events, secrets, and HTTP
+   with no UI at all.
+3. **Enrichment cards** — song meanings, chords for the current track,
+   concert alerts by polling.
+4. **Panels** — a friends sidebar with status and "Listen along",
+   language-learning flashcards over the translation data, listening
+   statistics.
+5. **Integrations** — commands for launchers and hotkey daemons through
+   the control CLI.
+
+One deliberate non-feature: plugins cannot call each other in v1. No
+dependency graph, no cross-plugin API; a plugin that wants translated
+data makes its own requests. Composition is a later question, refused
+until the catalog demands it.
+
+## 7. Clash resolution — when plugins overlap
 
 1. **Data capabilities are single-active, user-arbitrated.** Installing a
    second lyrics provider never silently replaces the first: the panel
@@ -114,7 +207,7 @@ Everything else — HTTP, timing, caching policy, retries — is host work.
 6. Determinism rule: *the user is the only arbiter; the host never
    resolves clashes silently.*
 
-## 7. Degree of change — what a plugin may and may not do
+## 8. Degree of change — what a plugin may and may not do
 
 **May (v1)** — contribute data (lyrics, translations, romanization),
 register commands, contribute schema-driven settings, use its own
@@ -135,7 +228,7 @@ in the background or outlive the app; ship native code.
 The line to remember: *plugins decorate Woofer; they never become
 Woofer.* The host stays fully functional with zero plugins installed.
 
-## 8. Keeping the app unbreakable — failure isolation
+## 9. Keeping the app unbreakable — failure isolation
 
 Layers, outermost first:
 
@@ -161,7 +254,7 @@ Layers, outermost first:
    required, sha256 pinned — by the time a plugin reaches users it has
    been read once by a human.
 
-## 9. Marketplace (website) and in-app management
+## 10. Marketplace (website) and in-app management
 
 - **Catalog repo** `woofer-plugins`: `plugins/<slug>/{manifest.json,
   plugin.wasm, icon, README}`. Approval = reviewed PR merge; CI
@@ -179,7 +272,7 @@ Layers, outermost first:
   delete (wasm + storage), visit link, version, publisher, domains;
   "Install from file…" for sideloading; per-capability active pickers.
 
-## 10. The first plugins
+## 11. The first plugins
 
 - **Romanize** (`translation-provider:romanize`): per-line `dt=rm`
   requests, ASCII lines skipped, identity results discarded.
