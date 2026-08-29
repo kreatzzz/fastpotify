@@ -242,16 +242,20 @@ fn top_result(
             pos2(rect.right() - 20.0, rect.bottom()),
         );
         let painter = ui.painter().with_clip_rect(text_clip);
-        painter.text(
-            pos2(text_clip.left(), text_clip.top() + 16.0),
-            egui::Align2::LEFT_CENTER,
+        crate::bidi::paint_line(
+            &painter,
+            text_clip.left(),
+            text_clip.right(),
+            text_clip.top() + 16.0,
             title,
             theme::bold(26.0),
             palette.text,
         );
-        painter.text(
-            pos2(text_clip.left(), text_clip.top() + 46.0),
-            egui::Align2::LEFT_CENTER,
+        crate::bidi::paint_line(
+            &painter,
+            text_clip.left(),
+            text_clip.right(),
+            text_clip.top() + 46.0,
             subtitle,
             theme::regular(13.5),
             palette.secondary,
@@ -334,6 +338,7 @@ fn songs(app: &mut App, ui: &mut egui::Ui, results: &SearchResults, limit: usize
                 added_by: None,
                 show_added_by: false,
                 compact: limit != usize::MAX,
+                shift: 0.0,
             },
         );
     }

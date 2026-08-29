@@ -20,7 +20,10 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 
 cp "$binary" "$app/Contents/MacOS/woofer"
 chmod 755 "$app/Contents/MacOS/woofer"
-sed "s/__VERSION__/$version/g" "$here/Info.plist" > "$app/Contents/Info.plist"
+# The build number has to be numbers: a release candidate's -rc1 comes off.
+build="${version%%-*}"
+sed -e "s/__VERSION__/$version/g" -e "s/__BUILD__/$build/g" "$here/Info.plist" \
+    > "$app/Contents/Info.plist"
 
 iconset="$(mktemp -d)/woofer.iconset"
 mkdir -p "$iconset"

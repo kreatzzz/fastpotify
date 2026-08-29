@@ -24,12 +24,16 @@ Open it and drag **Woofer** to Applications. Or, with
 brew install --cask crmne/tap/woofer
 ```
 
-Homebrew installs it like any download, so the first-open steps below
-apply once. To skip them, clear the quarantine flag instead:
+Homebrew installs the same unnotarized build, so the first-open steps below
+still apply. To skip them, clear the quarantine flag instead:
 
 ```sh
-xattr -d com.apple.quarantine /Applications/Woofer.app
+xattr -dr com.apple.quarantine /Applications/Woofer.app
 ```
+
+The `-r` matters: it clears the flag from the files inside the bundle too.
+macOS 26 leaves the app bouncing in the Dock forever when only the top level
+is cleared.
 
 ### First open on macOS
 
@@ -45,14 +49,13 @@ this with a right-click, so you open it once through Privacy & Security:
    to protect your Mac"*, and click **Open Anyway**.
 4. Authenticate, then click **Open Anyway** once more.
 
-macOS remembers the choice: every launch after this is an ordinary
-double-click. This step disappears once notarized builds ship.
+macOS remembers the choice, so later launches work with an ordinary
+double-click.
 
 ## Windows
 
 The installer adds Woofer to the Start menu and needs no administrator
-rights. Almost every PC wants the first one; the second is for Windows on
-ARM:
+rights. Choose x86_64 for most PCs or aarch64 for Windows on ARM:
 
 - [woofer-v{{ v }}-x86_64-pc-windows-msvc-setup.exe]({{ base }}/woofer-v{{ v }}-x86_64-pc-windows-msvc-setup.exe)
 - [woofer-v{{ v }}-aarch64-pc-windows-msvc-setup.exe]({{ base }}/woofer-v{{ v }}-aarch64-pc-windows-msvc-setup.exe)

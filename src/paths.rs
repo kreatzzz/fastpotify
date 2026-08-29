@@ -47,12 +47,24 @@ impl AppDirs {
         self.config.join("settings.json")
     }
 
+    /// Winamp skins the listener has added, as `.wsz` files or folders.
+    pub fn skins_dir(&self) -> PathBuf {
+        self.config.join("skins")
+    }
+
     pub fn session_file(&self) -> PathBuf {
         self.state.join("session.json")
     }
 
-    /// The Web API OAuth grant (access + refresh token).
-    pub fn web_token_file(&self) -> PathBuf {
+    pub fn shared_web_token_file(&self) -> PathBuf {
+        self.state.join("shared_web_api_token.json")
+    }
+
+    pub fn personal_web_token_file(&self) -> PathBuf {
+        self.state.join("personal_web_api_token.json")
+    }
+
+    pub fn legacy_web_token_file(&self) -> PathBuf {
         self.state.join("web_api_token.json")
     }
 
@@ -98,6 +110,10 @@ impl AppDirs {
     /// cleared cache must never uninstall one.
     pub fn plugins_dir(&self) -> PathBuf {
         self.state.join("plugins")
+    }
+
+    pub fn account_playlist_cache_dir(&self, account_id: &str) -> PathBuf {
+        self.playlist_cache_dir().join(account_id)
     }
 
     pub fn ensure(&self) -> std::io::Result<()> {

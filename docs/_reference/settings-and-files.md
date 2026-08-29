@@ -11,20 +11,24 @@ Woofer follows each platform's conventions. On Linux:
 | What | Where | Safe to delete? |
 | --- | --- | --- |
 | Settings | `~/.config/woofer/settings.json` | Yes, you lose preferences |
-| Web API sign-in | `~/.local/state/woofer/web_api_token.json` | Yes, you sign in again |
+| Winamp skins | `~/.config/woofer/skins/` | Yes, you add them again |
+| Shared Web API sign-in | `~/.local/state/woofer/shared_web_api_token.json` | Yes, you sign in again |
+| Personal Web API sign-in | `~/.local/state/woofer/personal_web_api_token.json` | Yes, personal acceleration is removed |
 | Playback credential | `~/.local/state/woofer/credentials/` | Yes, you approve playback again |
 | Last session | `~/.local/state/woofer/session.json` | Yes |
 | Audio cache | `~/.cache/woofer/audio/` | Always |
 | Artwork cache | `~/.cache/woofer/art/` | Always |
 | Lyrics cache | `~/.cache/woofer/lyrics/` | Always |
-| Translation cache | `~/.cache/woofer/translations/` | Always |
+| Translations cache | `~/.cache/woofer/translations/` | Always |
+| Account-scoped playlist cache | `~/.cache/woofer/playlists/<account-id>/` | Always |
+| Installed plugins | `~/.local/state/woofer/plugins/` | No, they are uninstalled |
 | Last run's log | `~/.local/state/woofer/woofer.log` | Always |
 | Crash log | `~/.local/state/woofer/panic.log` | Always |
 
 Clearing caches never signs you out; credentials live in *state*, not
-*cache*, precisely so cleanup tools cannot log you out. Both credential
-files are written with owner-only permissions. Signing out from Settings
-deletes both.
+*cache*. Web API token files are written with owner-only permissions.
+Signing out from Settings deletes both Web API grants and the separate
+playback credential.
 
 On macOS, settings, state, and the logs are in
 `~/Library/Application Support/me.kreatzzz.woofer` and the caches in
@@ -35,7 +39,8 @@ On macOS, settings, state, and the logs are in
 
 ## settings.json
 
-One readable JSON file, written atomically. The interesting fields:
+Settings are stored in one readable JSON file and written atomically. Its
+main fields are:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
@@ -48,9 +53,24 @@ One readable JSON file, written atomically. The interesting fields:
 | `audio_cache_mb` | `1024` | On-disk audio cache budget |
 | `theme` | `dark` | `dark`, `light`, or `system` |
 | `accent_from_art` | `true` | Tint pages with album art |
+| `winamp_window` | `false` | The window is the Winamp mini player |
+| `skin` | none | A file or folder name in the skins folder; the built-in skin when absent |
+| `skin_scale` | by display | Screen pixels per skin pixel, 1 to 4 |
+| `winamp_on_top` | `false` | Keep the mini player above other windows |
+| `vis` | `bars` | The mini player's visualiser: `bars`, `scope`, or `off` |
+| `playlist_open` | `false` | The playlist window is open under the mini player |
+| `playlist_height` | `174` | The playlist window's height in skin pixels |
+| `eq_open` | `false` | The equalizer window is open under the mini player |
+| `eq_on` | `false` | The equalizer shapes local playback |
+| `eq_preamp_db` | `0` | The preamp, in decibels, never above zero |
+| `eq_bands_db` | ten zeros | The bands from 60 Hz to 16 kHz, in decibels, -12 to 12 |
+| `balance` | `0` | Left to right, -1 to 1, for local playback |
+| `mono` | `false` | Play both channels the same |
+| `playlist_shaded` | `false` | The playlist window is rolled up to its title bar |
+| `winamp_shaded` | `false` | The main window is rolled up to its title bar |
 | `keep_playing_in_background` | `true` | Close to tray |
 | `check_for_updates` | `true` | Ask GitHub once a day for a newer release |
-| `web_client_id` | none | Your own Spotify app id, if you set one |
+| `web_client_id` | none | Optional personal Spotify app id used alongside shared coverage |
 | `lyrics_language` | `en` | Language the lyrics panel translates into |
 | `lyrics_show_translation` | `false` | Echo each lyric line in your language |
 | `lyrics_romanize` | `false` | Write lyric lines in Latin letters |
@@ -65,9 +85,9 @@ woofer [OPTIONS]
 ```
 
 `woofer.log` in the state directory is what to attach to a bug report:
-it holds the last run's output, the same lines `woofer -v` prints, so a
-run with `-v` says the most. If the app vanished, `panic.log` next to it
-says where it died; attach that too.
+it contains the last run's output, including the additional lines printed by
+`woofer -v`. If the app crashed, attach `panic.log` from the same directory
+as well.
 
 ## Demo mode
 
@@ -77,7 +97,8 @@ interface work. Demo mode never writes settings.
 
 `--demo-page` opens a page, such as `home`, `playlist:pl1`, or `artist:art0`,
 and `--demo-show` adds surfaces on top of it: a comma separated list of
-`queue`, `devices`, `lyrics`, `shortcuts`, `create`, and `light`.
+`queue`, `devices`, `lyrics`, `shortcuts`, `premium`, `create`, `light`, `focus`, `winamp`,
+`playlist`, `eq`, and `eq-shade`.
 
 `--demo-shot <PATH>` writes the window to a PNG and exits, which is how the
 screenshots in these pages are made:

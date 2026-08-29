@@ -1,23 +1,20 @@
 ---
 title: What is Woofer?
-description: Why Woofer exists, what it does, and what it honestly does not do.
+description: Why Woofer exists, what it supports, and its current limitations.
 nav_order: 0
 ---
 
-## The problem
+## Why Woofer
 
-The official Spotify client is a website in a box: a bundled browser engine
-that takes the better part of a gigabyte of memory to show you a list of
-songs. On Linux it is an afterthought; on a small laptop it is a tax. The
-lightweight alternatives mostly live in the terminal, which is a fine place
-to live, but not everyone wants their music there.
+The official Spotify client includes a browser engine and can use a
+significant amount of memory. Most lightweight alternatives use a terminal
+interface. Woofer provides a small graphical client instead.
 
 Woofer is a native Spotify client written in Rust with
 [egui](https://github.com/emilk/egui), playing music through
-[librespot](https://github.com/librespot-org/librespot). One small binary,
-no browser engine anywhere in the process, a launch measured in fractions of
-a second, with the layout you already know from Spotify, so there is almost
-nothing new to learn.
+[librespot](https://github.com/librespot-org/librespot). It is a single native
+binary with no embedded browser engine. It starts in well under a second and
+uses a layout similar to Spotify's desktop client.
 
 ![Woofer showing a playlist with the queue open and a track playing](/screenshot.png)
 
@@ -26,10 +23,10 @@ nothing new to learn.
 - **Plays music on this computer.** Woofer is a Spotify Connect device:
   pick it from your phone, or press play here. Gapless, up to 320 kbps, with
   optional volume normalisation and an on-disk audio cache.
-- **Controls every other device.** Move playback to a speaker, a phone, or
+- **Controls other devices.** Move playback to a speaker, a phone, or
   another computer from the device picker, and keep controlling it: play,
   pause, skip, seek, shuffle, repeat, volume.
-- **Your whole library.** Playlists, Liked Songs, saved albums, followed
+- **Library access.** Playlists, Liked Songs, saved albums, followed
   artists, podcasts, and saved episodes, filterable in the sidebar and as
   full pages. Playlists you own can be created, edited, and reordered.
 - **Search** across songs, artists, albums, playlists, podcasts, and
@@ -41,37 +38,48 @@ nothing new to learn.
   art of whatever you are looking at or listening to; light and dark themes,
   or follow the system.
 
-## What it does not do yet
+## What it does not do
 
-This is a young project, and it says so:
+Woofer deliberately has a limited scope:
 
-- **Playing on this computer needs Spotify Premium**, as with every
-  librespot-based client. Browsing, search, and remote control work on any
-  account.
-- Sign-in happens twice in a lifetime, not once: the Web API and streaming
-  are separate grants at Spotify. [How it connects](/how-it-connects/)
-  explains why.
-- No lyrics, no video podcasts, no social features.
+- **Playing needs Spotify Premium**, on this computer (as with every
+  librespot-based client) and on other devices too, because Spotify's API
+  only takes playback commands from Premium accounts. Browsing and search
+  work on any account, and Woofer says so when a Free account signs in.
+- Initial setup has two sign-ins because Spotify grants Web API and streaming
+  access separately. [How it connects](/how-it-connects/) explains why.
+- Local playback tops out at 320 kbps. Spotify protects its lossless streams
+  with DRM that librespot does not support, and Woofer will not circumvent
+  it. This can change if [lawful support lands upstream](https://github.com/librespot-org/librespot/issues/1583).
+- No video podcasts or social features.
 - Playlist reordering is a menu action, not drag-and-drop.
 - Woofer is an **unofficial** client built on Spotify's public Web API
   and librespot. Spotify changes these from time to time; when they do,
   features can break until the client catches up.
 
 If something misbehaves, [an issue](https://github.com/kreatzzz/woofer/issues)
-with the terminal output of `woofer -v` and what you expected instead is
-gold.
+should include the output of `woofer -v`, what happened, and what you
+expected.
+
+## Account safety
+
+We are not aware of a Spotify account being suspended for using Woofer
+or another librespot player with Premium. Sign-in happens on Spotify's own
+pages, audio uses the quality included with Premium, DRM stays intact, and
+Woofer does not rip tracks or block ads.
+
+Reported suspensions usually involve modded apps that remove ads from free
+accounts, track ripping, or stream manipulation. Woofer does none of
+those things, and its contribution rules prohibit them.
 
 ## Prior art
 
-Woofer stands on earlier efforts:
-[librespot](https://github.com/librespot-org/librespot) reimplemented
-Spotify's playback protocol and carries every open client, including this
-one; [spotify-tui](https://github.com/Rigellute/spotify-tui),
+Woofer uses [librespot](https://github.com/librespot-org/librespot) for
+Spotify playback. [spotify-tui](https://github.com/Rigellute/spotify-tui),
 [spotify-player](https://github.com/aome510/spotify-player), and
-[ncspot](https://github.com/hrkfdn/ncspot) proved how much client fits in a
-few megabytes; and [Omarchy Spotify](https://github.com/stappmus/Omarchy-Spotify)
-showed what a full-featured lightweight Spotify experience can look like on
-the Linux desktop.
+[ncspot](https://github.com/hrkfdn/ncspot) demonstrated the scope possible in
+a small client. [Omarchy Spotify](https://github.com/stappmus/Omarchy-Spotify)
+provided an example of a full graphical Spotify client for Linux.
 
 Woofer is an independent project, not affiliated with or endorsed by
 Spotify AB. Spotify is a trademark of Spotify AB.

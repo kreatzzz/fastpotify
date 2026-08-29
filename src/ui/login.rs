@@ -5,7 +5,7 @@ use egui::{Align, CornerRadius, Frame, Layout, Margin, Stroke, Vec2};
 use crate::app::App;
 use crate::backend::AuthStatus;
 use crate::model::Action;
-use crate::theme::{self, Icon};
+use crate::theme;
 
 pub fn show(app: &mut App, ui: &mut egui::Ui, connecting: bool) {
     let palette = app.palette;
@@ -35,9 +35,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, connecting: bool) {
                     ui.set_width(card_width - 72.0);
                     ui.spacing_mut().item_spacing.y = 8.0;
                     let (logo, _) = ui.allocate_exact_size(Vec2::splat(72.0), egui::Sense::hover());
-                    ui.painter().circle_filled(logo.center(), 36.0, palette.accent);
-                    let icon_rect = egui::Rect::from_center_size(logo.center() + Vec2::new(3.0, 0.0), Vec2::splat(32.0));
-                    Icon::PlayFilled.image(palette.on_accent, 32.0).paint_at(ui, icon_rect);
+                    theme::logo(ui, logo.center(), 72.0, palette.accent, palette.on_accent);
                     ui.add_space(6.0);
                     theme::text(ui, "Woofer", theme::bold(30.0), palette.text);
                     theme::text(ui, "A fast, native Spotify client.", theme::regular(14.5), palette.secondary);
@@ -75,6 +73,23 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, connecting: bool) {
                             if big_button(ui, app, "Try again") {
                                 app.actions.push(Action::SignIn);
                             }
+                            if app.settings.web_client_id.is_some() {
+                                ui.add_space(10.0);
+                                if theme::pill_button(
+                                    ui,
+                                    &palette,
+                                    "Use the shared Spotify app instead",
+                                    false,
+                                )
+                                .clicked()
+                                {
+                                    // A wrong personal Client ID trapped the
+                                    // user here with Settings out of reach.
+                                    app.settings.web_client_id = None;
+                                    app.mark_settings_dirty();
+                                    app.actions.push(Action::ConfigurePersonalWebApp);
+                                }
+                            }
                         }
                         _ => {
                             if big_button(ui, app, "Sign in with Spotify") {
@@ -89,6 +104,25 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, connecting: bool) {
                                 )
                                 .wrap(),
                             );
+                            if app.settings.web_client_id.is_some() {
+                                // A wrong personal Client ID dead-ends in the
+                                // browser on Spotify's side, so the app never
+                                // hears it failed; the way out has to stand
+                                // here, not only on the failure screen.
+                                ui.add_space(10.0);
+                                if theme::pill_button(
+                                    ui,
+                                    &palette,
+                                    "Use the shared Spotify app instead",
+                                    false,
+                                )
+                                .clicked()
+                                {
+                                    app.settings.web_client_id = None;
+                                    app.mark_settings_dirty();
+                                    app.actions.push(Action::ConfigurePersonalWebApp);
+                                }
+                            }
                         }
                     }
                 });

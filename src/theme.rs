@@ -353,6 +353,9 @@ pub enum Icon {
     Music,
     Pause,
     PauseFilled,
+    PanelLeft,
+    Pin,
+    PinOff,
     Pencil,
     Play,
     PlayFilled,
@@ -364,6 +367,7 @@ pub enum Icon {
     Repeat1,
     Search,
     Settings,
+    Shrink,
     Shuffle,
     SkipBack,
     SkipBackFilled,
@@ -439,6 +443,9 @@ const ICONS: &[(Icon, &str, &[u8])] = icons! {
     Music => "music",
     Pause => "pause",
     PauseFilled => "pause-filled",
+    PanelLeft => "panel-left",
+    Pin => "pin",
+    PinOff => "pin-off",
     Pencil => "pencil",
     Play => "play",
     PlayFilled => "play-filled",
@@ -450,6 +457,7 @@ const ICONS: &[(Icon, &str, &[u8])] = icons! {
     Repeat1 => "repeat-1",
     Search => "search",
     Settings => "settings",
+    Shrink => "shrink",
     Shuffle => "shuffle",
     SkipBack => "skip-back",
     SkipBackFilled => "skip-back-filled",
@@ -504,7 +512,10 @@ pub fn icon(ui: &mut egui::Ui, icon: Icon, size: f32, color: Color32) -> Respons
 
 /// Paints an icon centred in `rect` without allocating space.
 pub fn paint_icon(ui: &egui::Ui, icon: Icon, rect: egui::Rect, size: f32, color: Color32) {
-    let icon_rect = egui::Rect::from_center_size(rect.center(), Vec2::splat(size));
+    let icon_rect = egui::Rect::from_center_size(
+        rect.center() + play_glyph_offset(icon, size),
+        Vec2::splat(size),
+    );
     icon.image(color, size).paint_at(ui, icon_rect);
 }
 
@@ -541,6 +552,36 @@ pub fn icon_button(
 }
 
 /// A round, filled control such as the main play button.
+/// The horizontal nudge that visually centres a play triangle. A
+/// right-pointing triangle's mass sits left of its bounding box, so a
+/// geometrically centred glyph reads as pushed left and a full optical
+/// shift reads as pushed right. Lucide bakes about one viewBox unit
+/// (1/24) of right shift into the artwork; replacing it with a measured
+/// 3% of the icon size lands the glyph centred at every size used here.
+/// Every place that paints the glyph must use this, or the login-logo
+/// bug returns: hand-tuned nudges drifted apart per call site.
+pub fn play_glyph_offset(icon: Icon, icon_size: f32) -> Vec2 {
+    if matches!(icon, Icon::PlayFilled | Icon::Play) {
+        Vec2::new(icon_size * (0.03 - 1.0 / 24.0), 0.0)
+    } else {
+        Vec2::ZERO
+    }
+}
+
+/// The app's mark, the accent disc with the play triangle, drawn the same
+/// wherever it appears.
+pub fn logo(ui: &egui::Ui, center: egui::Pos2, diameter: f32, disc: Color32, glyph: Color32) {
+    ui.painter().circle_filled(center, diameter / 2.0, disc);
+    let icon_size = diameter * 0.45;
+    let icon_rect = egui::Rect::from_center_size(
+        center + play_glyph_offset(Icon::PlayFilled, icon_size),
+        Vec2::splat(icon_size),
+    );
+    Icon::PlayFilled
+        .image(glyph, icon_size)
+        .paint_at(ui, icon_rect);
+}
+
 pub fn circle_button(
     ui: &mut egui::Ui,
     icon: Icon,
@@ -558,17 +599,7 @@ pub fn circle_button(
         let fill = if hovered { fill_hover } else { fill };
         ui.painter().circle_filled(rect.center(), radius, fill);
         let icon_size = diameter * 0.46;
-        // A right-pointing triangle's visual mass sits left of its bounding
-        // box, so a geometrically centred glyph reads as pushed left and a
-        // full optical shift reads as pushed right. Lucide bakes about one
-        // viewBox unit (1/24) of right shift into the artwork; replace it
-        // with a measured 3% of the icon size, which lands the triangle
-        // visually centred in the disc at every size used here.
-        let offset = if matches!(icon, Icon::PlayFilled | Icon::Play) {
-            Vec2::new(icon_size * (0.03 - 1.0 / 24.0), 0.0)
-        } else {
-            Vec2::ZERO
-        };
+        let offset = play_glyph_offset(icon, icon_size);
         let icon_rect =
             egui::Rect::from_center_size(rect.center() + offset, Vec2::splat(icon_size));
         icon.image(icon_color, icon_size).paint_at(ui, icon_rect);
@@ -697,7 +728,9 @@ pub fn soft_button(
 ) -> Response {
     let font = medium(13.0);
     let color = if active { palette.window } else { palette.text };
-    let galley = ui.painter().layout_no_wrap(label.to_string(), font, color);
+    let galley =
+        ui.painter()
+            .layout_no_wrap(crate::bidi::display_text(label).into_owned(), font, color);
     let icon_size = 15.0;
     let icon_width = if icon.is_some() { icon_size + 6.0 } else { 0.0 };
     let padding = Vec2::new(12.0, 7.0);
@@ -762,6 +795,20 @@ pub fn text(
     font: egui::FontId,
     color: Color32,
 ) -> Response {
+    let text = text.into();
+    if crate::bidi::is_rtl(&text) {
+        // Laid out here so a cut lands at the reading end, on the left.
+        let galley = crate::bidi::layout(
+            ui.painter(),
+            &text,
+            font,
+            color,
+            ui.available_width(),
+            1,
+            Some(crate::bidi::ELLIPSIS),
+        );
+        return ui.add(egui::Label::new(galley).selectable(false));
+    }
     ui.add(
         egui::Label::new(egui::RichText::new(text).font(font).color(color))
             .truncate()
@@ -776,12 +823,30 @@ pub fn link(
     font: egui::FontId,
     color: Color32,
 ) -> Response {
-    let response = ui.add(
-        egui::Label::new(egui::RichText::new(text).font(font).color(color))
-            .truncate()
-            .selectable(false)
-            .sense(Sense::click()),
-    );
+    let text = text.into();
+    let response = if crate::bidi::is_rtl(&text) {
+        let galley = crate::bidi::layout(
+            ui.painter(),
+            &text,
+            font,
+            color,
+            ui.available_width(),
+            1,
+            Some(crate::bidi::ELLIPSIS),
+        );
+        ui.add(
+            egui::Label::new(galley)
+                .selectable(false)
+                .sense(Sense::click()),
+        )
+    } else {
+        ui.add(
+            egui::Label::new(egui::RichText::new(text).font(font).color(color))
+                .truncate()
+                .selectable(false)
+                .sense(Sense::click()),
+        )
+    };
     if response.hovered() {
         let rect = response.rect;
         ui.painter()

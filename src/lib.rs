@@ -4,8 +4,10 @@ pub mod api;
 pub mod app;
 pub mod auth;
 pub mod backend;
+pub mod bidi;
 #[cfg(any(test, feature = "demo"))]
 pub mod demo;
+pub mod eq;
 pub mod images;
 pub mod lyrics;
 #[cfg(target_os = "macos")]
@@ -24,6 +26,7 @@ pub mod plugins;
 pub mod settings;
 pub mod single_instance;
 pub mod sink;
+pub mod skin;
 pub mod system_fonts;
 pub mod theme;
 pub mod translate;
@@ -35,4 +38,6 @@ pub mod tray;
 pub mod ui;
 pub mod updates;
 pub mod util;
+pub mod vis;
+pub mod winamp;
 pub mod zeroconf;
