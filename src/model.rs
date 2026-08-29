@@ -22,6 +22,7 @@ pub enum Page {
     Show(String),
     Queue,
     Settings,
+    Plugins,
 }
 
 impl Page {
@@ -41,6 +42,7 @@ impl Page {
             Page::Show(id) => format!("show:{id}"),
             Page::Queue => "queue".into(),
             Page::Settings => "settings".into(),
+            Page::Plugins => "plugins".into(),
         }
     }
 
@@ -56,6 +58,7 @@ impl Page {
             "episodes" => Page::Episodes,
             "queue" => Page::Queue,
             "settings" => Page::Settings,
+            "plugins" => Page::Plugins,
             other => {
                 let (kind, id) = other.split_once(':')?;
                 match kind {
@@ -511,6 +514,9 @@ pub enum Action {
     CopyLink(String),
     /// A web page, in the browser.
     OpenUrl(String),
+    /// Fetches a plugin's wasm from a URL and installs it. The download
+    /// runs on a thread; the answer arrives as a toast.
+    InstallPluginUrl(String),
     OpenInSpotify(String),
     Search(String),
     SetSearchFilter(SearchFilter),

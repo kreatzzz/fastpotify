@@ -382,7 +382,8 @@ pub enum Command {
     CheckForUpdates,
     /// The words of a track, from LRCLIB.
     Lyrics(Box<LyricsRequest>),
-    /// The words of a track in another script and tongue, from Google Translate.
+    /// The words of a track in another script and tongue, from the active
+    /// translation plugins or, behind them, Google Translate.
     Translate(Box<TranslateRequest>),
     /// Sign in again with another Web API application (`None` for the
     /// shared one). Local playback keeps its own grant.
@@ -414,6 +415,10 @@ pub struct TranslateRequest {
     pub lines: Vec<String>,
     /// The Google language code to translate into.
     pub target: String,
+    /// Plugin ids the user switched off, so the active plugin is picked
+    /// with the interface's own settings in hand: the backend keeps no
+    /// settings of its own.
+    pub disabled_plugins: Vec<String>,
 }
 
 pub enum Event {
@@ -1187,12 +1192,13 @@ impl Worker {
         let http = self.http.clone();
         let events = self.events.clone();
         let waker = self.waker.clone();
+        let dirs = self.dirs.clone();
         let cache_dir = self.dirs.translations_cache_dir();
         tokio::spawn(async move {
             let lines: Vec<&str> = request.lines.iter().map(String::as_str).collect();
-            let result = crate::translate::fetch(&http, &cache_dir, &lines, &request.target)
-                .await
-                .map_err(|error| format!("{error:#}"));
+            // Whoever answers — a plugin or the built-in translator — the
+            // answer lands the same way.
+            let result = translate_lines(&http, &dirs, &cache_dir, &request, &lines).await;
             let _ = events.send(Event::Translate {
                 uri: request.uri,
                 target: request.target,
@@ -1560,6 +1566,137 @@ async fn spotify_lyrics(
             log::debug!("spotify lyrics unavailable: {error:#}");
             None
         }
+    }
+}
+
+/// The per-line aids for `lines`: the active plugin for each kind, the
+/// built-in translator behind it, both halves combined into one answer.
+/// When no plugin answers either kind, this is the built-in flow it always
+/// was.
+async fn translate_lines(
+    http: &reqwest::Client,
+    dirs: &AppDirs,
+    cache_dir: &std::path::Path,
+    request: &TranslateRequest,
+    lines: &[&str],
+) -> Result<Option<crate::translate::Translation>, String> {
+    use crate::plugins::manager;
+    let plugins = manager::list(dirs, &request.disabled_plugins);
+    let translator = manager::active(&plugins, "translate");
+    let romanizer = manager::active(&plugins, "romanize");
+    if translator.is_none() && romanizer.is_none() {
+        return crate::translate::fetch(http, cache_dir, lines, &request.target)
+            .await
+            .map_err(|error| format!("{error:#}"));
+    }
+    // The words first: when the reader's language is already the song's,
+    // there is nothing to add, and no spelling is asked for either.
+    let translated = match translator {
+        Some(plugin) => {
+            plugin_half(
+                http,
+                dirs,
+                cache_dir,
+                plugin,
+                "translate",
+                &request.target,
+                lines,
+            )
+            .await?
+        }
+        None => crate::translate::fetch_translation_only(http, cache_dir, lines, &request.target)
+            .await
+            .map(|found| found.map(|found| half_of(&found, "translate")))
+            .map_err(|error| format!("{error:#}"))?,
+    };
+    let Some(translated) = translated else {
+        return Ok(None);
+    };
+    let romanized = match romanizer {
+        Some(plugin) => {
+            plugin_half(
+                http,
+                dirs,
+                cache_dir,
+                plugin,
+                "romanize",
+                &request.target,
+                lines,
+            )
+            .await?
+        }
+        None => Some(
+            crate::translate::fetch_romanization_only(http, cache_dir, lines, &request.target)
+                .await
+                .map(|found| {
+                    found
+                        .map(|found| half_of(&found, "romanize"))
+                        .unwrap_or_default()
+                })
+                .map_err(|error| format!("{error:#}"))?,
+        ),
+    };
+    Ok(Some(crate::translate::Translation {
+        // A cached "the plugin had nothing" is an empty spelling, not a
+        // missing half.
+        romanized: romanized.unwrap_or_default(),
+        translated,
+    }))
+}
+
+/// One plugin's half of the answer, cached under the plugin's own id. When
+/// the plugin fails its run — a trap, out of fuel, a domain it may not ask —
+/// the built-in translator answers instead, with a note in the log.
+async fn plugin_half(
+    http: &reqwest::Client,
+    dirs: &AppDirs,
+    cache_dir: &std::path::Path,
+    plugin: &crate::plugins::manager::Plugin,
+    kind: &str,
+    target: &str,
+    lines: &[&str],
+) -> Result<Option<Vec<Option<String>>>, String> {
+    use crate::plugins::{host, manager};
+    if let Some(cached) = manager::read_cached(cache_dir, &plugin.id, target, lines) {
+        return Ok(cached.map(|found| half_of(&found, kind)));
+    }
+    let run = async {
+        let wasm = manager::wasm_bytes(dirs, plugin)?;
+        let manifest = plugin.manifest();
+        host::run_translation(&wasm, &manifest, kind, target, lines).await
+    }
+    .await;
+    match run {
+        Ok(found) => {
+            manager::store_cached(cache_dir, &plugin.id, target, lines, &Some(found.clone()));
+            Ok(Some(half_of(&found, kind)))
+        }
+        Err(plugin_error) => {
+            log::warn!(
+                "the plugin {} failed its {kind} run; the built-in translator answers instead: {plugin_error}",
+                plugin.id
+            );
+            let built_in = match kind {
+                "romanize" => {
+                    crate::translate::fetch_romanization_only(http, cache_dir, lines, target).await
+                }
+                _ => crate::translate::fetch_translation_only(http, cache_dir, lines, target).await,
+            };
+            built_in
+                .map(|found| found.map(|found| half_of(&found, kind)))
+                .map_err(|error| format!("{error:#}"))
+        }
+    }
+}
+
+/// The half of an answer the kind asked for: a plugin run produces the
+/// whole `Translation` shape, but a translate plugin is believed about
+/// words and a romanize plugin about spelling.
+fn half_of(found: &crate::translate::Translation, kind: &str) -> Vec<Option<String>> {
+    if kind == "romanize" {
+        found.romanized.clone()
+    } else {
+        found.translated.clone()
     }
 }
 

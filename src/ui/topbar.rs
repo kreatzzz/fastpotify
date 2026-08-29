@@ -212,6 +212,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 {
                     app.actions.push(Action::Open(Page::Settings));
                 }
+                if theme::icon_button(
+                    ui,
+                    Icon::Puzzle,
+                    19.0,
+                    palette.secondary,
+                    palette.text,
+                    "Plugins",
+                )
+                .clicked()
+                {
+                    app.actions.push(Action::Open(Page::Plugins));
+                }
                 // A quiet spinner once the app has been talking to Spotify for a
                 // while, long enough that fast requests never flash it.
                 if app

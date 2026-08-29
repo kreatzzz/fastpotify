@@ -10,6 +10,7 @@ pub mod library;
 pub mod login;
 mod lyrics;
 pub mod player_bar;
+pub mod plugins;
 pub mod queue;
 pub mod search;
 pub mod settings;
@@ -141,6 +142,7 @@ fn central(app: &mut App, ui: &mut egui::Ui) {
                                 Page::Show(id) => show::show(app, ui, &id),
                                 Page::Queue => queue::page(app, ui),
                                 Page::Settings => settings::show(app, ui),
+                                Page::Plugins => plugins::show(app, ui),
                             }
                         });
                 });

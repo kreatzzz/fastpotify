@@ -66,6 +66,9 @@ pub struct Settings {
     pub lyrics_show_translation: bool,
     /// Rewrite lyric lines in Latin letters, to sing along.
     pub lyrics_romanize: bool,
+    /// Plugin ids the user switched off; installed or built in, they stay
+    /// quiet until switched back on.
+    pub disabled_plugins: Vec<String>,
 }
 
 impl Default for Settings {
@@ -94,6 +97,7 @@ impl Default for Settings {
             lyrics_language: "en".to_string(),
             lyrics_show_translation: false,
             lyrics_romanize: false,
+            disabled_plugins: Vec::new(),
         }
     }
 }

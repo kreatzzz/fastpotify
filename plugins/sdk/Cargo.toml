@@ -1,0 +1,27 @@
+[package]
+name = "woofer-plugin-sdk"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+description = "The Woofer plugin SDK: the plugin ABI, once, and the test harness"
+repository = "https://github.com/kreatzzz/woofer"
+keywords = ["woofer", "plugin", "wasm", "sdk"]
+categories = ["multimedia::audio"]
+
+[dependencies]
+# The glue folds the host's responses into the call's input and packs a
+# handler's refusal as {"error":…}; JSON everywhere means serde_json here too.
+serde_json = "1"
+# The test harness runs a built module on the same interpreter the host
+# runs. Never part of a plugin module itself: host side only.
+wasmi = { version = "0.31", optional = true }
+
+[features]
+harness = ["dep:wasmi"]
+
+[dev-dependencies]
+# The harness test speaks WAT directly, so no plugin needs building first.
+wat = "1"
+
+[workspace]

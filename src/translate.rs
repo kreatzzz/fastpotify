@@ -12,6 +12,10 @@
 //! loses the newlines, so it is asked for one line at a time, a few requests
 //! in flight. And when Google hears the song already in the reader's
 //! language, there is nothing to add, and nothing more is asked.
+//!
+//! When Google refuses a whole batch, a keyless public mirror of the same
+//! translator is asked behind it, as a last resort. It speaks translation
+//! only, so a song it answered has no spelling to offer either.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -24,6 +28,11 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 const API: &str = "https://clients5.google.com/translate_a/single";
+/// The keyless mirror of the same translator, asked only when Google has
+/// already refused. It answers `{"translation": "…"}` and reports no tongue
+/// it heard, so a song in the reader's own language costs one request more
+/// before anyone can tell.
+const FALLBACK_API: &str = "https://lingva.ml/api/v1";
 /// Lyrics do not change; a cached answer is good for this long.
 const CACHE_LIFETIME: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// The room one request's query may take, counted so carefully that no song,
@@ -33,11 +42,12 @@ const MAX_QUERY: usize = 6000;
 const ROMANIZE_AT_ONCE: usize = 5;
 /// A refused request is tried again this many times, waiting a little
 /// longer between tries, since an answer a moment late still spares the
-/// next play of the song every request at all.
-const ATTEMPTS: u32 = 3;
+/// next play of the song every request at all. The plugin host keeps the
+/// same discipline for the requests it makes on a plugin's behalf.
+pub(crate) const ATTEMPTS: u32 = 3;
 /// The wait before the first retry, and the ceiling it doubles towards.
-const FIRST_RETRY: Duration = Duration::from_millis(500);
-const MAX_RETRY: Duration = Duration::from_secs(4);
+pub(crate) const FIRST_RETRY: Duration = Duration::from_millis(500);
+pub(crate) const MAX_RETRY: Duration = Duration::from_secs(4);
 
 /// Per-line aids for the lyrics panel, aligned with the track's lyric lines.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,7 +72,7 @@ pub async fn fetch(
     if lines.iter().all(|line| line.trim().is_empty()) {
         return Ok(None);
     }
-    let cache_path = cache_dir.join(format!("{}.json", cache_key(target, lines)));
+    let cache_path = cache_dir.join(format!("{}.json", cache_key(None, target, lines)));
     if let Some(cached) = read_cache(&cache_path) {
         return Ok(cached);
     }
@@ -71,12 +81,107 @@ pub async fn fetch(
     Ok(found)
 }
 
+/// The translation of `lines` into `target`, with no romanization: the
+/// narrower half of [`fetch`], for when a plugin owns the spelling and the
+/// host needs only the words. Same batching, same caching, under its own
+/// cache scope.
+pub async fn fetch_translation_only(
+    http: &reqwest::Client,
+    cache_dir: &Path,
+    lines: &[&str],
+    target: &str,
+) -> Result<Option<Translation>> {
+    // Nothing to say: an empty song asks for nothing.
+    if lines.iter().all(|line| line.trim().is_empty()) {
+        return Ok(None);
+    }
+    let cache_path = cache_dir.join(format!(
+        "{}.json",
+        cache_key(Some("translation"), target, lines)
+    ));
+    if let Some(cached) = read_cache(&cache_path) {
+        return Ok(cached);
+    }
+    let found = batched(http, lines, target)
+        .await?
+        .map(|(text, _)| Translation {
+            romanized: Vec::new(),
+            translated: aligned(&text, lines.len()),
+        });
+    write_cache(&cache_path, &found);
+    Ok(found)
+}
+
+/// The romanization of `lines`, with no translation: the other half of
+/// [`fetch`], for the same reason. Same per-line asking, same caching,
+/// under its own cache scope.
+pub async fn fetch_romanization_only(
+    http: &reqwest::Client,
+    cache_dir: &Path,
+    lines: &[&str],
+    target: &str,
+) -> Result<Option<Translation>> {
+    // Nothing to say: an empty song asks for nothing.
+    if lines.iter().all(|line| line.trim().is_empty()) {
+        return Ok(None);
+    }
+    let cache_path = cache_dir.join(format!(
+        "{}.json",
+        cache_key(Some("romanize"), target, lines)
+    ));
+    if let Some(cached) = read_cache(&cache_path) {
+        return Ok(cached);
+    }
+    let spelled = romanize(http, lines, target).await;
+    // A spelling nobody offered is not worth remembering: the endpoint may
+    // be down this minute and back the next, and one stubborn line must not
+    // cost a song its spelling for a month.
+    if spelled.iter().all(Option::is_none) {
+        return Ok(Some(Translation {
+            romanized: spelled,
+            translated: Vec::new(),
+        }));
+    }
+    let found = Some(Translation {
+        romanized: spelled,
+        translated: Vec::new(),
+    });
+    write_cache(&cache_path, &found);
+    Ok(found)
+}
+
 /// What Google has for `lines`, fresh from the endpoint.
 async fn ask(http: &reqwest::Client, lines: &[&str], target: &str) -> Result<Option<Translation>> {
+    let Some((text, fell_back)) = batched(http, lines, target).await? else {
+        return Ok(None);
+    };
+    Ok(Some(Translation {
+        // The fallback speaks translation only: a song it answered has no
+        // spelling to ask for, and Google has already said no.
+        romanized: if fell_back {
+            Vec::new()
+        } else {
+            romanize(http, lines, target).await
+        },
+        translated: aligned(&text, lines.len()),
+    }))
+}
+
+/// The translation of `lines`, batch by batch, Google first with the
+/// keyless fallback waiting behind it. Returns the stitched text — or
+/// `None` when the first answer says the song is already in the reader's
+/// language — and whether the fallback had to speak.
+async fn batched(
+    http: &reqwest::Client,
+    lines: &[&str],
+    target: &str,
+) -> Result<Option<(String, bool)>> {
     let chunks = chunk_lines(lines);
     let mut text = String::new();
+    let mut fell_back = false;
     for (index, chunk) in chunks.iter().enumerate() {
-        let (piece, source) = translated(&request(http, target, chunk).await?)?;
+        let (piece, source, used_fallback) = ask_chunk(http, target, chunk).await?;
+        fell_back |= used_fallback;
         // The first answer tells the tongue the song was heard in; when that
         // is the reader's own, there is nothing to add, and no spelling to
         // ask for either.
@@ -91,39 +196,73 @@ async fn ask(http: &reqwest::Client, lines: &[&str], target: &str) -> Result<Opt
         }
         text.push_str(&piece);
     }
-    Ok(Some(Translation {
-        romanized: romanize(http, lines, target).await,
-        translated: aligned(&text, lines.len()),
-    }))
+    Ok(Some((text, fell_back)))
 }
 
-/// One call to the endpoint the Google Translate page itself uses, tried
-/// again on a refusal: a little later each time, with a dash of randomness
-/// so concurrent lines do not knock together, and for as long as Google's
-/// own `Retry-After` asks when it sends one. `text` may hold several lines
-/// joined with newlines.
+/// One batch's translation: Google first, and when Google refuses the whole
+/// batch, the keyless fallback behind it. The tongue comes back empty when
+/// the fallback answered, for it reports none.
+async fn ask_chunk(
+    http: &reqwest::Client,
+    target: &str,
+    chunk: &str,
+) -> Result<(String, String, bool)> {
+    match request(http, target, chunk).await {
+        Ok(answer) => {
+            let (text, source) = translated(&answer)?;
+            Ok((text, source, false))
+        }
+        Err(error) => {
+            log::debug!("Google Translate refused a batch; trying the keyless fallback: {error:#}");
+            match fallback_translated(http, target, chunk).await {
+                Ok((text, source)) => Ok((text, source, true)),
+                Err(fallback) => {
+                    log::debug!("the keyless fallback failed too: {fallback:#}");
+                    Err(error)
+                }
+            }
+        }
+    }
+}
+
+/// One call to the endpoint the Google Translate page itself uses. `text`
+/// may hold several lines joined with newlines.
 async fn request(http: &reqwest::Client, target: &str, text: &str) -> Result<serde_json::Value> {
     let url = format!(
         "{API}?client=dict-chrome-ex&dt=t&dt=rm&sl=auto&tl={}&q={}",
         urlencoding::encode(target),
         urlencoding::encode(text),
     );
+    get_retrying(http, &url, "Google Translate")
+        .await?
+        .json()
+        .await
+        .context("unexpected answer from Google Translate")
+}
+
+/// One GET, tried again on a refusal: a little later each time, with a dash
+/// of randomness so concurrent requests do not knock together, and for as
+/// long as the server's own `Retry-After` asks when it sends one. `what`
+/// names the service, in the log and in the errors; every caller that asks
+/// the network for the panel keeps this discipline.
+pub(crate) async fn get_retrying(
+    http: &reqwest::Client,
+    url: &str,
+    what: &str,
+) -> Result<reqwest::Response> {
     let mut wait = FIRST_RETRY;
     for attempt in 0..ATTEMPTS {
         let response = http
-            .get(&url)
+            .get(url)
             .send()
             .await
-            .context("cannot reach Google Translate")?;
+            .with_context(|| format!("cannot reach {what}"))?;
         let status = response.status();
         if status.is_success() {
-            return response
-                .json()
-                .await
-                .context("unexpected answer from Google Translate");
+            return Ok(response);
         }
         if attempt + 1 == ATTEMPTS {
-            anyhow::bail!("Google Translate answered {status}");
+            anyhow::bail!("{what} answered {status}");
         }
         let asked = response
             .headers()
@@ -133,11 +272,40 @@ async fn request(http: &reqwest::Client, target: &str, text: &str) -> Result<ser
             .map(Duration::from_secs)
             .unwrap_or(wait);
         let pause = asked + Duration::from_millis(rand::random::<u64>() % 250);
-        log::debug!("Google Translate answered {status}; trying again in {pause:?}");
+        log::debug!("{what} answered {status}; trying again in {pause:?}");
         tokio::time::sleep(pause).await;
         wait = (wait * 2).min(MAX_RETRY);
     }
     unreachable!("the loop returns or bails on its last attempt")
+}
+
+// ---- the keyless fallback ----------------------------------------------------
+
+/// One batch's translation from the keyless mirror, Google having refused.
+async fn fallback_translated(
+    http: &reqwest::Client,
+    target: &str,
+    text: &str,
+) -> Result<(String, String)> {
+    let url = format!(
+        "{FALLBACK_API}/auto/{}/{}",
+        urlencoding::encode(target),
+        urlencoding::encode(text),
+    );
+    let response = get_retrying(http, &url, "the fallback translator").await?;
+    let answer: serde_json::Value = response
+        .json()
+        .await
+        .context("unexpected answer from the fallback translator")?;
+    let piece = translation_field(&answer)
+        .context("unexpected answer from the fallback translator")?
+        .to_string();
+    Ok((piece, String::new()))
+}
+
+/// The translated text a Lingva answer carries, if it answered with one.
+fn translation_field(answer: &serde_json::Value) -> Option<&str> {
+    answer.get("translation").and_then(|field| field.as_str())
 }
 
 /// The translated text of an answer — every segment's first words, joined —
@@ -308,9 +476,37 @@ struct Cached {
     found: Option<Translation>,
 }
 
-fn cache_key(target: &str, lines: &[&str]) -> String {
-    let digest = Sha1::digest(format!("{target}\n{}", lines.join("\n")).as_bytes());
+/// The sha1 naming a translations cache file, from whatever identifies the
+/// answer: the plugin host prefixes its own files with the plugin's id, so
+/// one answer can never be served for another's.
+pub(crate) fn cache_digest(payload: &str) -> String {
+    let digest = Sha1::digest(payload.as_bytes());
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// The cache key for the whole flow, or one of its halves: `scope` is
+/// `None` for the built-in flow's own files, and names the half otherwise,
+/// so a translation-only answer is never served where a whole one belongs.
+pub(crate) fn cache_key(scope: Option<&str>, target: &str, lines: &[&str]) -> String {
+    let mut payload = String::new();
+    if let Some(scope) = scope {
+        payload.push_str(scope);
+        payload.push('\n');
+    }
+    payload.push_str(target);
+    payload.push('\n');
+    payload.push_str(&lines.join("\n"));
+    cache_digest(&payload)
+}
+
+/// The cached answer at `path`, while it is fresh; the plugin host keeps
+/// the same discipline and shape under its own keys.
+pub(crate) fn read_cached(path: &PathBuf) -> Option<Option<Translation>> {
+    read_cache(path)
+}
+
+pub(crate) fn store_cached(path: &Path, found: &Option<Translation>) {
+    write_cache(path, found);
 }
 
 fn read_cache(path: &PathBuf) -> Option<Option<Translation>> {
@@ -408,10 +604,29 @@ mod tests {
     #[test]
     fn the_cache_key_depends_on_the_words_and_the_tongue() {
         let lines = ["こんにちは", "世界"];
-        let key = cache_key("en", &lines);
-        assert_eq!(key, cache_key("en", &lines));
-        assert_ne!(key, cache_key("fr", &lines));
-        assert_ne!(key, cache_key("en", &["こんにちは", "世界", "！"]));
+        let key = cache_key(None, "en", &lines);
+        assert_eq!(key, cache_key(None, "en", &lines));
+        assert_ne!(key, cache_key(None, "fr", &lines));
+        assert_ne!(key, cache_key(None, "en", &["こんにちは", "世界", "！"]));
         assert_eq!(key.len(), 40);
+        // A half's answer is never served where a whole one belongs.
+        assert_ne!(key, cache_key(Some("translation"), "en", &lines));
+        assert_ne!(key, cache_key(Some("romanize"), "en", &lines));
+        assert_ne!(
+            cache_key(Some("translation"), "en", &lines),
+            cache_key(Some("romanize"), "en", &lines)
+        );
+    }
+
+    #[test]
+    fn the_fallback_answers_with_one_field_or_explains_itself() {
+        let answer: serde_json::Value =
+            serde_json::from_str(r#"{"translation":"bonjour le monde"}"#).unwrap();
+        assert_eq!(translation_field(&answer), Some("bonjour le monde"));
+        let refusal: serde_json::Value = serde_json::from_str(
+            r#"{"error":"An error occurred while retrieving the translation"}"#,
+        )
+        .unwrap();
+        assert_eq!(translation_field(&refusal), None);
     }
 }

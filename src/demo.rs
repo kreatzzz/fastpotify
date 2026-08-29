@@ -747,6 +747,7 @@ mod tests {
             Page::Show("sh0".into()),
             Page::Queue,
             Page::Settings,
+            Page::Plugins,
         ];
         for page in pages {
             app.open(page.clone());

@@ -169,6 +169,8 @@ pub struct App {
     pub show_pages: HashMap<String, ShowPage>,
     pub track_cache: HashMap<String, Track>,
     track_requests: HashSet<String>,
+    /// Installed plugins, refreshed at startup and after every change.
+    pub plugins: Vec<crate::plugins::manager::Plugin>,
 
     pub history: Vec<Page>,
     pub history_index: usize,
@@ -208,6 +210,9 @@ pub struct App {
     /// A play request made while the local engine was still connecting; it
     /// starts the moment the engine reports ready.
     queued_play: Option<PlayRequest>,
+    /// A plugin download from a URL, in flight on a thread; its receiver
+    /// is polled every frame in tick().
+    pending_install: Option<std::sync::mpsc::Receiver<Result<Vec<u8>, String>>>,
     /// A receiver just activated, waiting for Spotify to list it so playback
     /// can move there.
     pending_transfer_to: Option<(String, Instant)>,
@@ -306,7 +311,7 @@ impl App {
             .last_page
             .as_deref()
             .and_then(Page::decode)
-            .filter(|page| !matches!(page, Page::Settings | Page::Queue))
+            .filter(|page| !matches!(page, Page::Settings | Page::Queue | Page::Plugins))
             .unwrap_or(Page::Home);
 
         let mut app = Self {
@@ -352,6 +357,7 @@ impl App {
             show_pages: HashMap::new(),
             track_cache: HashMap::new(),
             track_requests: HashSet::new(),
+            plugins: Vec::new(),
             history: vec![first_page],
             history_index: 0,
             saved: HashMap::new(),
@@ -375,6 +381,7 @@ impl App {
             pending_play_keys: Vec::new(),
             pending_play_at: None,
             queued_play: None,
+            pending_install: None,
             pending_transfer_to: None,
             remote_recheck_at: None,
             seek_preview: None,
@@ -406,6 +413,7 @@ impl App {
             last_update_check: None,
         };
         app.local.volume = app.settings.volume;
+        app.refresh_plugins();
         app
     }
 
@@ -1026,6 +1034,7 @@ impl App {
                 uri,
                 lines: lyrics.lines.iter().map(|line| line.text.clone()).collect(),
                 target,
+                disabled_plugins: self.settings.disabled_plugins.clone(),
             })));
     }
 
@@ -1112,6 +1121,7 @@ impl App {
         if self.settings_dirty && self.last_settings_save.elapsed() > Duration::from_secs(2) {
             self.save_settings();
         }
+        self.poll_plugin_install(ctx);
     }
 
     /// Note that a setting changed, so the file is saved shortly.
@@ -1402,6 +1412,7 @@ impl App {
             }
             Page::Queue => self.refresh_queue(true),
             Page::Settings => {}
+            Page::Plugins => {}
         }
     }
 
@@ -2446,6 +2457,128 @@ impl App {
         self.remote_polled_at = Instant::now() - REMOTE_POLL_IDLE + Duration::from_millis(700);
     }
 
+    // ---- plugins ---------------------------------------------------------------
+
+    /// Rereads the plugin list from disk; called at startup and after
+    /// every change.
+    fn refresh_plugins(&mut self) {
+        self.plugins = crate::plugins::manager::list(&self.dirs, &self.settings.disabled_plugins);
+    }
+
+    /// Writes a plugin's wasm to disk. The caller toasts the outcome.
+    /// The manager's async install wants a runtime the interface thread
+    /// does not have, so this goes through its synchronous form; a
+    /// plugin is small and validating it costs a moment, not a frame.
+    pub fn install_plugin_bytes(&mut self, wasm: &[u8]) -> Result<String, String> {
+        let installed = crate::plugins::manager::install_blocking(&self.dirs, wasm)?;
+        self.refresh_plugins();
+        Ok(installed.name)
+    }
+
+    pub fn remove_plugin(&mut self, id: &str) {
+        crate::plugins::manager::remove(&self.dirs, id);
+        self.refresh_plugins();
+    }
+
+    /// A disabled plugin is a name on a list in the settings, so the
+    /// switch flips the membership and lets the ordinary settings
+    /// persistence carry it to disk.
+    pub fn set_plugin_enabled(&mut self, id: &str, enabled: bool) {
+        if enabled {
+            self.settings.disabled_plugins.retain(|held| held != id);
+        } else if !self.settings.disabled_plugins.iter().any(|held| held == id) {
+            self.settings.disabled_plugins.push(id.to_string());
+        }
+        if let Some(plugin) = self.plugins.iter_mut().find(|plugin| plugin.id == id) {
+            plugin.enabled = enabled;
+        }
+        self.settings_dirty = true;
+    }
+
+    /// Starts a plugin download from a URL on a thread. The interface
+    /// never waits on the network; the answer lands in `pending_install`
+    /// and tick() toasts the outcome when it arrives.
+    fn begin_plugin_install(&mut self, url: String) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = fetch_plugin_wasm(&url);
+            let _ = sender.send(result);
+        });
+        self.pending_install = Some(receiver);
+    }
+
+    /// The download started by [`App::begin_plugin_install`], if any. A
+    /// missing answer just asks for another frame; a finished one is
+    /// installed here, where toasting the result costs nothing.
+    fn poll_plugin_install(&mut self, ctx: &egui::Context) {
+        let received = self
+            .pending_install
+            .as_ref()
+            .map(|receiver| receiver.try_recv());
+        match received {
+            Some(Ok(Ok(bytes))) => {
+                self.pending_install = None;
+                match self.install_plugin_bytes(&bytes) {
+                    Ok(installed) => {
+                        self.toast(format!("Installed {}", self.plugin_name(&installed)));
+                    }
+                    Err(error) => {
+                        self.toast_error(format!("Couldn't install the plugin: {error}"));
+                    }
+                }
+            }
+            Some(Ok(Err(error))) => {
+                self.pending_install = None;
+                self.toast_error(format!("Couldn't download the plugin: {error}"));
+            }
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                // The thread died before answering; nothing to wait for.
+                self.pending_install = None;
+            }
+            _ => {
+                if self.pending_install.is_some() {
+                    ctx.request_repaint_after(Duration::from_millis(120));
+                }
+            }
+        }
+    }
+
+    /// The display name for a freshly installed plugin, looked up in the
+    /// reread list; the string install answered with stands in when the
+    /// entry cannot be found.
+    fn plugin_name(&self, installed: &str) -> String {
+        self.plugins
+            .iter()
+            .find(|plugin| plugin.id == installed || plugin.name == installed)
+            .map(|plugin| plugin.name.clone())
+            .unwrap_or_else(|| installed.to_string())
+    }
+
+    /// A .wasm file dropped onto the window installs itself; anything
+    /// else dropped here is none of the plugins page's business.
+    fn accept_dropped_plugins(&mut self, ctx: &egui::Context) {
+        let files = ctx.input_mut(|input| std::mem::take(&mut input.raw.dropped_files));
+        for file in files {
+            let path = file.path().to_path_buf();
+            if path.extension().is_none_or(|extension| extension != "wasm") {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| "plugin".into());
+            match std::fs::read(&path) {
+                Ok(bytes) => match self.install_plugin_bytes(&bytes) {
+                    Ok(installed) => {
+                        self.toast(format!("Installed {}", self.plugin_name(&installed)));
+                    }
+                    Err(error) => self.toast_error(format!("Couldn't install {name}: {error}")),
+                },
+                Err(error) => self.toast_error(format!("Couldn't read {name}: {error}")),
+            }
+        }
+    }
+
     // ---- navigation ------------------------------------------------------------
 
     pub fn open(&mut self, page: Page) {
@@ -3295,6 +3428,7 @@ impl App {
                 }
             }
             Action::OpenUrl(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
+            Action::InstallPluginUrl(url) => self.begin_plugin_install(url),
             Action::ClearArtCache => match self.backend.art().clear_disk_cache() {
                 Ok(bytes) => {
                     ctx.forget_all_images();
@@ -3370,6 +3504,7 @@ impl App {
         let ctx = &ctx;
         self.apply_theme(ctx);
         self.lock_scroll_axis(ctx);
+        self.accept_dropped_plugins(ctx);
         crate::ui::show(self, ui);
         self.apply_actions(ctx);
         self.sync_media_controls();
@@ -3585,6 +3720,26 @@ fn friendly_page_error(error: &crate::api::ApiError, own_app: bool) -> String {
         }
         _ => error.to_string(),
     }
+}
+
+/// The bytes of a plugin's wasm, fetched on a worker thread so the
+/// interface never waits on the network. The app keeps no blocking
+/// client of its own; an install is rare enough to build one for.
+fn fetch_plugin_wasm(url: &str) -> Result<Vec<u8>, String> {
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let response = client
+        .get(url)
+        .send()
+        .and_then(|response| response.error_for_status())
+        .map_err(|error| error.to_string())?;
+    Ok(response
+        .bytes()
+        .map_err(|error| error.to_string())?
+        .to_vec())
 }
 
 /// Spotify balks at gigantic track lists, so a play that starts deep in

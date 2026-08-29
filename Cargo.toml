@@ -77,6 +77,10 @@ hmac = "0.12"
 pbkdf2 = "0.12"
 aes = "0.8"
 ctr = "0.9"
+# The plugin sandbox. A pure interpreter, so a plugin cannot drag in a
+# native JIT or a TLS stack; 0.31 is the ABI the plugin SDK targets, and
+# pinning the minor keeps the host and the SDK compiled against one API.
+wasmi = "0.31"
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 # The tray item and the desktop's media controls on Windows and macOS, so
