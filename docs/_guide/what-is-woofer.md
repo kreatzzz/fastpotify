@@ -1,6 +1,6 @@
 ---
-title: What is Fastpotify?
-description: Why Fastpotify exists, what it does, and what it honestly does not do.
+title: What is Woofer?
+description: Why Woofer exists, what it does, and what it honestly does not do.
 nav_order: 0
 ---
 
@@ -12,18 +12,18 @@ songs. On Linux it is an afterthought; on a small laptop it is a tax. The
 lightweight alternatives mostly live in the terminal, which is a fine place
 to live, but not everyone wants their music there.
 
-Fastpotify is a native Spotify client written in Rust with
+Woofer is a native Spotify client written in Rust with
 [egui](https://github.com/emilk/egui), playing music through
 [librespot](https://github.com/librespot-org/librespot). One small binary,
 no browser engine anywhere in the process, a launch measured in fractions of
 a second, with the layout you already know from Spotify, so there is almost
 nothing new to learn.
 
-![Fastpotify showing a playlist with the queue open and a track playing](/screenshot.png)
+![Woofer showing a playlist with the queue open and a track playing](/screenshot.png)
 
 ## What it does
 
-- **Plays music on this computer.** Fastpotify is a Spotify Connect device:
+- **Plays music on this computer.** Woofer is a Spotify Connect device:
   pick it from your phone, or press play here. Gapless, up to 320 kbps, with
   optional volume normalisation and an on-disk audio cache.
 - **Controls every other device.** Move playback to a speaker, a phone, or
@@ -53,17 +53,17 @@ This is a young project, and it says so:
   explains why.
 - No lyrics, no video podcasts, no social features.
 - Playlist reordering is a menu action, not drag-and-drop.
-- Fastpotify is an **unofficial** client built on Spotify's public Web API
+- Woofer is an **unofficial** client built on Spotify's public Web API
   and librespot. Spotify changes these from time to time; when they do,
   features can break until the client catches up.
 
-If something misbehaves, [an issue](https://github.com/crmne/fastpotify/issues)
-with the terminal output of `fastpotify -v` and what you expected instead is
+If something misbehaves, [an issue](https://github.com/kreatzzz/woofer/issues)
+with the terminal output of `woofer -v` and what you expected instead is
 gold.
 
 ## Prior art
 
-Fastpotify stands on earlier efforts:
+Woofer stands on earlier efforts:
 [librespot](https://github.com/librespot-org/librespot) reimplemented
 Spotify's playback protocol and carries every open client, including this
 one; [spotify-tui](https://github.com/Rigellute/spotify-tui),
@@ -73,5 +73,5 @@ few megabytes; and [Omarchy Spotify](https://github.com/stappmus/Omarchy-Spotify
 showed what a full-featured lightweight Spotify experience can look like on
 the Linux desktop.
 
-Fastpotify is an independent project, not affiliated with or endorsed by
+Woofer is an independent project, not affiliated with or endorsed by
 Spotify AB. Spotify is a trademark of Spotify AB.

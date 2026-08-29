@@ -37,11 +37,11 @@ impl FastTray {
 
 impl ksni::Tray for FastTray {
     fn id(&self) -> String {
-        "fastpotify".into()
+        "woofer".into()
     }
 
     fn title(&self) -> String {
-        "Fastpotify".into()
+        "Woofer".into()
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
@@ -68,7 +68,7 @@ impl ksni::Tray for FastTray {
         use ksni::menu::*;
         vec![
             StandardItem {
-                label: "Show / hide Fastpotify".into(),
+                label: "Show / hide Woofer".into(),
                 activate: Box::new(|tray: &mut Self| tray.send(TrayCommand::ShowHide)),
                 ..Default::default()
             }

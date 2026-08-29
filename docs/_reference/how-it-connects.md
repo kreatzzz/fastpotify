@@ -6,10 +6,10 @@ nav_order: 1
 
 ## Two grants, once each
 
-Fastpotify talks to Spotify in two distinct ways, and Spotify issues
+Woofer talks to Spotify in two distinct ways, and Spotify issues
 credentials for them separately:
 
-1. **The Web API** covers your library, search, playlists, and devices. Fastpotify
+1. **The Web API** covers your library, search, playlists, and devices. Woofer
    uses the standard Authorization Code + PKCE flow in your browser, as a
    registered Spotify application. The refresh token is stored locally and
    renewed automatically; your password never touches the app.
@@ -50,7 +50,7 @@ how, in five minutes.
 
 ## When Spotify pushes back
 
-The Web API rate-limits bursts. Fastpotify bounds its concurrency, honours
+The Web API rate-limits bursts. Woofer bounds its concurrency, honours
 `Retry-After`, retries quietly, and shows a small spinner in the top bar
 when a conversation with Spotify takes longer than a moment. Spotify also
 reshapes endpoints over time; the client detects several of these shapes at
@@ -63,7 +63,7 @@ account. Anything waiting to be given one, which is the normal state for a
 self-hosted librespot or spotifyd, is invisible to the Web API.
 
 Those receivers announce themselves over mDNS as `_spotify-connect._tcp` and
-answer a small HTTP interface. Fastpotify asks a receiver to describe itself,
+answer a small HTTP interface. Woofer asks a receiver to describe itself,
 then hands over the reusable credential librespot already stores, wrapped
 twice: once in a key derived from the receiver's own device id, and again in
 a key both sides derive from a Diffie-Hellman exchange with the public key

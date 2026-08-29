@@ -39,7 +39,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, connecting: bool) {
                     let icon_rect = egui::Rect::from_center_size(logo.center() + Vec2::new(3.0, 0.0), Vec2::splat(32.0));
                     Icon::PlayFilled.image(palette.on_accent, 32.0).paint_at(ui, icon_rect);
                     ui.add_space(6.0);
-                    theme::text(ui, "Fastpotify", theme::bold(30.0), palette.text);
+                    theme::text(ui, "Woofer", theme::bold(30.0), palette.text);
                     theme::text(ui, "A fast, native Spotify client.", theme::regular(14.5), palette.secondary);
                     ui.add_space(22.0);
                     match &app.auth {
@@ -95,7 +95,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, connecting: bool) {
             ui.painter().text(
                 egui::pos2(rect.center().x, rect.bottom() - 24.0),
                 egui::Align2::CENTER_BOTTOM,
-                format!("Fastpotify {} • not affiliated with Spotify", env!("CARGO_PKG_VERSION")),
+                format!("Woofer {} • not affiliated with Spotify", env!("CARGO_PKG_VERSION")),
                 theme::regular(11.5),
                 palette.dim,
             );

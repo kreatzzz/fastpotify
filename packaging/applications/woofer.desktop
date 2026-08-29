@@ -1,14 +1,14 @@
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=Fastpotify
+Name=Woofer
 GenericName=Music Player
 Comment=A fast, native Spotify client
-Exec=fastpotify
+Exec=woofer
 Terminal=false
 Categories=AudioVideo;Audio;Player;Music;
 Keywords=spotify;music;player;streaming;
-Icon=fastpotify
+Icon=woofer
 StartupNotify=true
-StartupWMClass=fastpotify
+StartupWMClass=woofer
 MimeType=x-scheme-handler/spotify;

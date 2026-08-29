@@ -1,6 +1,6 @@
 //! One running instance at a time, and its remote-control channel.
 //!
-//! Two copies of Fastpotify fight over things a user notices: two Spotify
+//! Two copies of Woofer fight over things a user notices: two Spotify
 //! Connect devices with the same name, two MPRIS players for the media keys
 //! to disagree about, two tray icons. So a second launch does not start a
 //! second app; it asks the one already running to show itself and exits.
@@ -26,9 +26,9 @@
 //! releases the port when the process ends.
 //!
 //! On those platforms the socket doubles as the remote-control channel:
-//! `fastpotify next` (or a Raycast script running it) connects, sends one
-//! `fastpotify:<verb>` line, and reads one reply line. Playback verbs are
-//! acknowledged with `fastpotify:ok` and land in the same action queue the
+//! `woofer next` (or a Raycast script running it) connects, sends one
+//! `woofer:<verb>` line, and reads one reply line. Playback verbs are
+//! acknowledged with `woofer:ok` and land in the same action queue the
 //! tray and the media keys feed; `nowplaying` is answered from a snapshot
 //! the app keeps fresh, so the listener thread never touches app state.
 //! Linux needs none of this: MPRIS already gives `playerctl` the same verbs,
@@ -36,11 +36,11 @@
 
 /// The name held for the lifetime of the running instance.
 #[cfg(target_os = "linux")]
-const INSTANCE_NAME: &str = "rocks.fastpotify.Instance";
+const INSTANCE_NAME: &str = "me.kreatzzz.woofer.Instance";
 
 /// The MPRIS player to ask when another instance already holds the name.
 #[cfg(target_os = "linux")]
-const MPRIS_NAME: &str = "org.mpris.MediaPlayer2.fastpotify";
+const MPRIS_NAME: &str = "org.mpris.MediaPlayer2.woofer";
 
 pub enum Outcome {
     /// This process is the only instance. Hold the guard until it exits.
@@ -105,13 +105,13 @@ pub const NOTHING_PLAYING: &str = "stopped";
 const INSTANCE_PORT: u16 = 47_113;
 
 /// Every request and reply starts with this, so a foreign program that
-/// happens to hold the port is never mistaken for Fastpotify.
+/// happens to hold the port is never mistaken for Woofer.
 #[cfg(not(target_os = "linux"))]
-const PREFIX: &str = "fastpotify:";
+const PREFIX: &str = "woofer:";
 #[cfg(not(target_os = "linux"))]
-const OK_REPLY: &str = "fastpotify:ok";
+const OK_REPLY: &str = "woofer:ok";
 #[cfg(not(target_os = "linux"))]
-const NOW_REPLY: &str = "fastpotify:now ";
+const NOW_REPLY: &str = "woofer:now ";
 
 /// What the running instance said back.
 #[cfg(not(target_os = "linux"))]
@@ -152,7 +152,7 @@ fn send_to(port: u16, verb: &str) -> std::io::Result<Reply> {
     } else {
         Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            "the port is held by something other than Fastpotify",
+            "the port is held by something other than Woofer",
         ))
     }
 }
@@ -171,12 +171,12 @@ pub fn acquire(waker: &crate::backend::Waker) -> Outcome {
         Ok(listener) => listener,
         Err(_) => {
             // Someone holds the port. Ask them to show themselves, and only
-            // stand down if they answer as Fastpotify.
+            // stand down if they answer as Woofer.
             let answered = send("show").is_ok_and(|reply| matches!(reply, Reply::Ok));
             if answered {
                 return Outcome::Surfaced;
             }
-            log::warn!("port {INSTANCE_PORT} is busy but not with Fastpotify; running unguarded");
+            log::warn!("port {INSTANCE_PORT} is busy but not with Woofer; running unguarded");
             return Outcome::Only(unguarded());
         }
     };
@@ -186,7 +186,7 @@ pub fn acquire(waker: &crate::backend::Waker) -> Outcome {
     let now_playing = Arc::clone(&guard.now_playing);
     let waker = waker.clone();
     let spawned = std::thread::Builder::new()
-        .name("fastpotify-instance".to_owned())
+        .name("woofer-instance".to_owned())
         .spawn(move || serve(listener, &commands, &now_playing, &waker));
     if let Err(error) = spawned {
         log::warn!("cannot listen for other launches: {error}");
@@ -323,7 +323,7 @@ pub fn acquire(_waker: &crate::backend::Waker) -> Outcome {
         Ok(_) | Err(mpris_server::zbus::Error::NameTaken) => {
             if !raise_running_instance(&connection) {
                 log::warn!(
-                    "Fastpotify is already running but did not answer; not starting a second copy"
+                    "Woofer is already running but did not answer; not starting a second copy"
                 );
             }
             Outcome::Surfaced
@@ -371,41 +371,32 @@ mod tests {
     #[test]
     fn parses_every_control_verb() {
         // #given / #when / #then
-        assert_eq!(command("fastpotify:show\n"), Some(ControlCommand::Show));
+        assert_eq!(command("woofer:show\n"), Some(ControlCommand::Show));
+        assert_eq!(command("woofer:playpause"), Some(ControlCommand::PlayPause));
+        assert_eq!(command("woofer:play"), Some(ControlCommand::Play));
+        assert_eq!(command("woofer:pause"), Some(ControlCommand::Pause));
+        assert_eq!(command("woofer:next"), Some(ControlCommand::Next));
+        assert_eq!(command("woofer:previous"), Some(ControlCommand::Previous));
         assert_eq!(
-            command("fastpotify:playpause"),
-            Some(ControlCommand::PlayPause)
-        );
-        assert_eq!(command("fastpotify:play"), Some(ControlCommand::Play));
-        assert_eq!(command("fastpotify:pause"), Some(ControlCommand::Pause));
-        assert_eq!(command("fastpotify:next"), Some(ControlCommand::Next));
-        assert_eq!(
-            command("fastpotify:previous"),
-            Some(ControlCommand::Previous)
-        );
-        assert_eq!(
-            command("fastpotify:seek-by -10000"),
+            command("woofer:seek-by -10000"),
             Some(ControlCommand::SeekBy(-10_000))
         );
         assert_eq!(
-            command("fastpotify:volume-by +5"),
+            command("woofer:volume-by +5"),
             Some(ControlCommand::VolumeBy(5))
         );
         assert_eq!(
-            command("fastpotify:volume-set 40"),
+            command("woofer:volume-set 40"),
             Some(ControlCommand::SetVolume(40))
         );
-        assert_eq!(command("fastpotify:mute"), Some(ControlCommand::ToggleMute));
+        assert_eq!(command("woofer:mute"), Some(ControlCommand::ToggleMute));
         assert_eq!(
-            command("fastpotify:shuffle"),
+            command("woofer:shuffle"),
             Some(ControlCommand::ToggleShuffle)
         );
-        assert_eq!(
-            command("fastpotify:repeat"),
-            Some(ControlCommand::CycleRepeat)
-        );
+        assert_eq!(command("woofer:repeat"), Some(ControlCommand::CycleRepeat));
         assert!(matches!(
-            parse("fastpotify:nowplaying"),
+            parse("woofer:nowplaying"),
             Some(Request::NowPlaying)
         ));
     }
@@ -413,14 +404,14 @@ mod tests {
     #[test]
     fn rejects_lines_that_are_not_ours() {
         assert!(parse("GET / HTTP/1.1").is_none());
-        assert!(parse("fastpotify:frobnicate").is_none());
-        assert!(parse("fastpotify:seek-by soon").is_none());
-        assert!(parse("fastpotify:volume-set 999").is_none());
-        assert!(parse("fastpotify:next please").is_none());
+        assert!(parse("woofer:frobnicate").is_none());
+        assert!(parse("woofer:seek-by soon").is_none());
+        assert!(parse("woofer:volume-set 999").is_none());
+        assert!(parse("woofer:next please").is_none());
         assert!(parse("").is_none());
     }
 
-    /// The whole channel over a real socket: what `fastpotify next` sends is
+    /// The whole channel over a real socket: what `woofer next` sends is
     /// what the app finds in its queue, and `nowplaying` reads back the
     /// snapshot the app published.
     #[test]

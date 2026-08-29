@@ -128,7 +128,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             |ui| {
                 if theme::pill_button(ui, &palette, "Show me how", false).clicked() {
                     app.actions.push(Action::OpenUrl(
-                        "https://fastpotify.rocks/make-it-even-faster/".into(),
+                        "https://github.com/kreatzzz/woofer/make-it-even-faster/".into(),
                     ));
                 }
             },
@@ -160,12 +160,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             let (title, detail) = if own {
                 (
                     "Ready to switch to your app",
-                    "Fastpotify signs in again with it; your browser opens once.",
+                    "Woofer signs in again with it; your browser opens once.",
                 )
             } else {
                 (
                     "Back to the shared app?",
-                    "Fastpotify signs in again with it; your browser opens once.",
+                    "Woofer signs in again with it; your browser opens once.",
                 )
             };
             widgets::setting_row(ui, &palette, title, detail, |ui| {
@@ -305,7 +305,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             ui,
             &palette,
             "Keep music playing when the window closes",
-            "Fastpotify hides to the system tray. Quit from the tray menu or with Ctrl+Q.",
+            "Woofer hides to the system tray. Quit from the tray menu or with Ctrl+Q.",
             |ui| {
                 if widgets::switch(ui, &palette, &mut app.settings.keep_playing_in_background)
                     .changed()
@@ -545,7 +545,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             ui.vertical(|ui| {
                 theme::text(
                     ui,
-                    format!("Fastpotify {}", env!("CARGO_PKG_VERSION")),
+                    format!("Woofer {}", env!("CARGO_PKG_VERSION")),
                     theme::semibold(15.0),
                     palette.text,
                 );

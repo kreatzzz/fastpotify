@@ -1,25 +1,25 @@
 ---
 title: Settings & Files
-description: Where Fastpotify keeps configuration, credentials, and caches, and what is safe to delete.
+description: Where Woofer keeps configuration, credentials, and caches, and what is safe to delete.
 nav_order: 0
 ---
 
 ## Where things live
 
-Fastpotify follows each platform's conventions. On Linux:
+Woofer follows each platform's conventions. On Linux:
 
 | What | Where | Safe to delete? |
 | --- | --- | --- |
-| Settings | `~/.config/fastpotify/settings.json` | Yes, you lose preferences |
-| Web API sign-in | `~/.local/state/fastpotify/web_api_token.json` | Yes, you sign in again |
-| Playback credential | `~/.local/state/fastpotify/credentials/` | Yes, you approve playback again |
-| Last session | `~/.local/state/fastpotify/session.json` | Yes |
-| Audio cache | `~/.cache/fastpotify/audio/` | Always |
-| Artwork cache | `~/.cache/fastpotify/art/` | Always |
-| Lyrics cache | `~/.cache/fastpotify/lyrics/` | Always |
-| Translation cache | `~/.cache/fastpotify/translations/` | Always |
-| Last run's log | `~/.local/state/fastpotify/fastpotify.log` | Always |
-| Crash log | `~/.local/state/fastpotify/panic.log` | Always |
+| Settings | `~/.config/woofer/settings.json` | Yes, you lose preferences |
+| Web API sign-in | `~/.local/state/woofer/web_api_token.json` | Yes, you sign in again |
+| Playback credential | `~/.local/state/woofer/credentials/` | Yes, you approve playback again |
+| Last session | `~/.local/state/woofer/session.json` | Yes |
+| Audio cache | `~/.cache/woofer/audio/` | Always |
+| Artwork cache | `~/.cache/woofer/art/` | Always |
+| Lyrics cache | `~/.cache/woofer/lyrics/` | Always |
+| Translation cache | `~/.cache/woofer/translations/` | Always |
+| Last run's log | `~/.local/state/woofer/woofer.log` | Always |
+| Crash log | `~/.local/state/woofer/panic.log` | Always |
 
 Clearing caches never signs you out; credentials live in *state*, not
 *cache*, precisely so cleanup tools cannot log you out. Both credential
@@ -27,11 +27,11 @@ files are written with owner-only permissions. Signing out from Settings
 deletes both.
 
 On macOS, settings, state, and the logs are in
-`~/Library/Application Support/me.paolino.fastpotify` and the caches in
-`~/Library/Caches/me.paolino.fastpotify`. On Windows, settings are in
-`%APPDATA%\paolino\fastpotify\config`, state and the logs in
-`%LOCALAPPDATA%\paolino\fastpotify\data`, and the caches in
-`%LOCALAPPDATA%\paolino\fastpotify\cache`.
+`~/Library/Application Support/me.kreatzzz.woofer` and the caches in
+`~/Library/Caches/me.kreatzzz.woofer`. On Windows, settings are in
+`%APPDATA%\kreatzzz\woofer\config`, state and the logs in
+`%LOCALAPPDATA%\kreatzzz\woofer\data`, and the caches in
+`%LOCALAPPDATA%\kreatzzz\woofer\cache`.
 
 ## settings.json
 
@@ -39,7 +39,7 @@ One readable JSON file, written atomically. The interesting fields:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `device_name` | `Fastpotify` | Name on Spotify Connect |
+| `device_name` | `Woofer` | Name on Spotify Connect |
 | `bitrate` | `320` | 96, 160, or 320 kbps |
 | `normalisation` | `false` | Volume normalisation |
 | `autoplay` | `true` | Keep playing similar music at the end |
@@ -58,14 +58,14 @@ One readable JSON file, written atomically. The interesting fields:
 ## Command line
 
 ```
-fastpotify [OPTIONS]
+woofer [OPTIONS]
 
   --device-name <NAME>  Spotify Connect name for this session
   -v, --verbose         More logs from librespot and the API client
 ```
 
-`fastpotify.log` in the state directory is what to attach to a bug report:
-it holds the last run's output, the same lines `fastpotify -v` prints, so a
+`woofer.log` in the state directory is what to attach to a bug report:
+it holds the last run's output, the same lines `woofer -v` prints, so a
 run with `-v` says the most. If the app vanished, `panic.log` next to it
 says where it died; attach that too.
 

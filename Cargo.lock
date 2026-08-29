@@ -1505,57 +1505,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fastpotify"
-version = "0.2.0"
-dependencies = [
- "aes",
- "anyhow",
- "base64",
- "clap",
- "cpal",
- "ctr",
- "directories",
- "eframe",
- "egui",
- "egui_extras",
- "env_logger",
- "hmac",
- "image",
- "jiff",
- "ksni",
- "librespot-connect",
- "librespot-core",
- "librespot-metadata",
- "librespot-playback",
- "librespot-protocol",
- "log",
- "mdns-sd",
- "memmap2",
- "mpris-server",
- "objc2 0.6.4",
- "objc2-app-kit 0.3.2",
- "objc2-foundation 0.3.2",
- "open",
- "pbkdf2",
- "percent-encoding",
- "rand 0.9.5",
- "reqwest",
- "rodio",
- "serde",
- "serde_json",
- "sha1",
- "sha2",
- "skrifa",
- "souvlaki",
- "thiserror 2.0.20",
- "tokio",
- "tray-icon",
- "urlencoding",
- "windows-sys 0.60.2",
- "winresource",
-]
-
-[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6926,6 +6875,57 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+
+[[package]]
+name = "woofer"
+version = "0.2.0"
+dependencies = [
+ "aes",
+ "anyhow",
+ "base64",
+ "clap",
+ "cpal",
+ "ctr",
+ "directories",
+ "eframe",
+ "egui",
+ "egui_extras",
+ "env_logger",
+ "hmac",
+ "image",
+ "jiff",
+ "ksni",
+ "librespot-connect",
+ "librespot-core",
+ "librespot-metadata",
+ "librespot-playback",
+ "librespot-protocol",
+ "log",
+ "mdns-sd",
+ "memmap2",
+ "mpris-server",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "open",
+ "pbkdf2",
+ "percent-encoding",
+ "rand 0.9.5",
+ "reqwest",
+ "rodio",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "skrifa",
+ "souvlaki",
+ "thiserror 2.0.20",
+ "tokio",
+ "tray-icon",
+ "urlencoding",
+ "windows-sys 0.60.2",
+ "winresource",
+]
 
 [[package]]
 name = "writeable"

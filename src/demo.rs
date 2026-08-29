@@ -20,17 +20,17 @@ use crate::model::*;
 fn image(seed: u32) -> Vec<Image> {
     vec![
         Image {
-            url: format!("https://picsum.photos/seed/fastpotify{seed}/640/640"),
+            url: format!("https://picsum.photos/seed/woofer{seed}/640/640"),
             width: Some(640),
             height: Some(640),
         },
         Image {
-            url: format!("https://picsum.photos/seed/fastpotify{seed}/300/300"),
+            url: format!("https://picsum.photos/seed/woofer{seed}/300/300"),
             width: Some(300),
             height: Some(300),
         },
         Image {
-            url: format!("https://picsum.photos/seed/fastpotify{seed}/64/64"),
+            url: format!("https://picsum.photos/seed/woofer{seed}/64/64"),
             width: Some(64),
             height: Some(64),
         },
@@ -464,7 +464,7 @@ pub fn populate(app: &mut App) {
     app.devices = vec![
         Device {
             id: Some("local-demo".into()),
-            name: "Fastpotify".into(),
+            name: "Woofer".into(),
             is_active: false,
             is_restricted: false,
             volume_percent: Some(70),
@@ -710,8 +710,7 @@ mod tests {
     /// Every page, panel, and dialog lays out without panicking.
     #[test]
     fn every_surface_renders_headless() {
-        let root =
-            std::env::temp_dir().join(format!("fastpotify-render-test-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("woofer-render-test-{}", std::process::id()));
         let dirs = AppDirs {
             config: root.join("config"),
             state: root.join("state"),

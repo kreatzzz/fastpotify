@@ -1,4 +1,4 @@
-//! Fastpotify's internals, exposed so diagnostics and tests can reach them.
+//! Woofer's internals, exposed so diagnostics and tests can reach them.
 
 pub mod api;
 pub mod app;

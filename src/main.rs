@@ -2,13 +2,13 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use fastpotify::{app, backend, paths, settings, single_instance, util};
+use woofer::{app, backend, paths, settings, single_instance, util};
 
 use clap::Parser;
 
 /// A fast, native Spotify client.
 #[derive(Debug, Parser)]
-#[command(name = "fastpotify", version, about)]
+#[command(name = "woofer", version, about)]
 struct Cli {
     /// A command for the running instance; without one, the app starts.
     #[command(subcommand)]
@@ -136,7 +136,7 @@ fn run_control(control: Control) -> i32 {
             0
         }
         Err(error) => {
-            eprintln!("Fastpotify is not running, or predates remote control: {error}");
+            eprintln!("Woofer is not running, or predates remote control: {error}");
             1
         }
     }
@@ -146,7 +146,7 @@ fn run_control(control: Control) -> i32 {
 fn run_control(_control: Control) -> i32 {
     eprintln!(
         "On Linux the running instance speaks MPRIS instead; use e.g. \
-         `playerctl --player=fastpotify play-pause`."
+         `playerctl --player=woofer play-pause`."
     );
     2
 }
@@ -183,9 +183,9 @@ fn main() -> eframe::Result<()> {
         std::process::exit(run_control(control));
     }
     let default_filter = if cli.verbose {
-        "info,librespot=info,fastpotify=debug"
+        "info,librespot=info,woofer=debug"
     } else {
-        "warn,fastpotify=info"
+        "warn,woofer=info"
     };
     let dirs = paths::AppDirs::discover();
     let dirs_ready = dirs.ensure();
@@ -227,7 +227,7 @@ fn main() -> eframe::Result<()> {
         match single_instance::acquire(&waker) {
             single_instance::Outcome::Only(guard) => Some(guard),
             single_instance::Outcome::Surfaced => {
-                log::info!("Fastpotify is already running; asked it to show its window");
+                log::info!("Woofer is already running; asked it to show its window");
                 return Ok(());
             }
         }
@@ -253,8 +253,8 @@ fn main() -> eframe::Result<()> {
     }
     #[cfg(feature = "demo")]
     if demo {
-        fastpotify::demo::populate(&mut app);
-        fastpotify::demo::apply_flags(&mut app, cli.demo_page.as_deref(), cli.demo_show.as_deref());
+        woofer::demo::populate(&mut app);
+        woofer::demo::apply_flags(&mut app, cli.demo_page.as_deref(), cli.demo_show.as_deref());
     }
     #[cfg(feature = "demo")]
     let shot = cli.demo_shot.clone().map(|path| Shot {
@@ -274,7 +274,7 @@ fn main() -> eframe::Result<()> {
         #[cfg(not(feature = "demo"))]
         let options = native_options(false);
         eframe::run_native(
-            "Fastpotify",
+            "Woofer",
             options,
             Box::new(move |cc| {
                 creator_waker.attach(&cc.egui_ctx);
@@ -288,9 +288,9 @@ fn main() -> eframe::Result<()> {
                 // repaint.
                 #[cfg(target_os = "macos")]
                 {
-                    fastpotify::mac_menu::init();
+                    woofer::mac_menu::init();
                     let ctx = cc.egui_ctx.clone();
-                    fastpotify::mac_menu::set_waker(move || ctx.request_repaint());
+                    woofer::mac_menu::set_waker(move || ctx.request_repaint());
                 }
                 app.attach(&cc.egui_ctx);
                 Ok(Box::new(Shell {
@@ -329,7 +329,7 @@ fn main() -> eframe::Result<()> {
                     break;
                 }
             }
-            fastpotify::tray::idle(std::time::Duration::from_millis(150));
+            woofer::tray::idle(std::time::Duration::from_millis(150));
         }
         let quit = {
             let guard = slot.lock().unwrap_or_else(|p| p.into_inner());
@@ -375,7 +375,7 @@ fn log_panics(path: std::path::PathBuf) {
         previous(info);
         let thread = std::thread::current();
         let entry = format!(
-            "{} fastpotify {} on thread {:?}: {info}\n",
+            "{} woofer {} on thread {:?}: {info}\n",
             jiff::Timestamp::now(),
             env!("CARGO_PKG_VERSION"),
             thread.name().unwrap_or("unnamed"),
@@ -394,8 +394,8 @@ fn log_panics(path: std::path::PathBuf) {
 fn native_options(fullscreen: bool) -> eframe::NativeOptions {
     eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Fastpotify")
-            .with_app_id("fastpotify")
+            .with_title("Woofer")
+            .with_app_id("woofer")
             .with_inner_size([1240.0, 800.0])
             .with_min_inner_size([760.0, 520.0])
             .with_fullscreen(fullscreen)
@@ -489,9 +489,9 @@ impl eframe::App for Shell {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if let Some(app) = self.app.as_mut() {
             #[cfg(target_os = "macos")]
-            for command in fastpotify::mac_menu::drain_commands() {
-                use fastpotify::mac_menu::MenuCommand;
-                use fastpotify::model::{Action, Dialog, Page};
+            for command in woofer::mac_menu::drain_commands() {
+                use woofer::mac_menu::MenuCommand;
+                use woofer::model::{Action, Dialog, Page};
                 let action = match command {
                     MenuCommand::PlayPause => Action::TogglePlay,
                     MenuCommand::Next => Action::Next,
@@ -512,9 +512,7 @@ impl eframe::App for Shell {
                     MenuCommand::Back => Action::Back,
                     MenuCommand::Forward => Action::Forward,
                     MenuCommand::OpenRepo => {
-                        ctx.open_url(egui::OpenUrl::new_tab(
-                            "https://github.com/crmne/fastpotify",
-                        ));
+                        ctx.open_url(egui::OpenUrl::new_tab("https://github.com/kreatzzz/woofer"));
                         continue;
                     }
                     // Editing goes through egui, which owns the text field

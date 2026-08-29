@@ -173,7 +173,7 @@ impl Inner {
 
 impl BytesLoader for ArtLoader {
     fn id(&self) -> &'static str {
-        "fastpotify::ArtLoader"
+        "woofer::ArtLoader"
     }
 
     fn load(&self, ctx: &egui::Context, uri: &str) -> BytesLoadResult {

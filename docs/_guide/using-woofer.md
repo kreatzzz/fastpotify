@@ -63,9 +63,9 @@ appear in Spotify's own device list once an account has been handed to them.
 Until then the Web API cannot see them at all, however plainly they show up
 in the official client.
 
-Fastpotify looks for those on your local network whenever you open the
+Woofer looks for those on your local network whenever you open the
 device picker, and lists them under the devices Spotify already knows about,
-marked *on your network*. Choose one and Fastpotify hands it your account
+marked *on your network*. Choose one and Woofer hands it your account
 over the local network, encrypted so that only that receiver can read it.
 A moment later it joins Spotify Connect properly and playback moves there,
 and from then on it is an ordinary device to every Spotify client you own.
@@ -104,7 +104,7 @@ nothing to ask again.
 
 ## The tray
 
-Closing the window keeps the music playing: Fastpotify stays in the system
+Closing the window keeps the music playing: Woofer stays in the system
 tray with play, pause, skip, and quit in its menu, and clicking the icon
 brings the window back. On Linux it is a standard status-notifier item, so
 it works in any bar that shows tray icons, and MPRIS keeps `playerctl`,
@@ -112,7 +112,7 @@ media keys, and your desktop's players widget working the whole time.
 
 ## One window, one instance
 
-Starting Fastpotify while it is already running does not open a second copy.
+Starting Woofer while it is already running does not open a second copy.
 The launch hands the request to the instance already there, which brings its
 window forward, and then gets out of the way. Two copies would mean two
 Spotify Connect devices with the same name and two players arguing over your

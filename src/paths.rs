@@ -1,11 +1,11 @@
-//! Where Fastpotify keeps its files.
+//! Where Woofer keeps its files.
 //!
 //! Configuration, durable state (Spotify credentials), and disposable caches
 //! (audio, artwork) live in the platform's conventional directories, so
 //! clearing a cache never signs the user out and a config backup never
 //! contains a credential.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use directories::ProjectDirs;
 
@@ -18,22 +18,26 @@ pub struct AppDirs {
 
 impl AppDirs {
     pub fn discover() -> Self {
-        let project = ProjectDirs::from("me", "paolino", "fastpotify");
+        let project = ProjectDirs::from("me", "kreatzzz", "woofer");
         match project {
-            Some(project) => Self {
-                config: project.config_dir().to_path_buf(),
-                state: project
-                    .state_dir()
-                    .map(|path| path.to_path_buf())
-                    .unwrap_or_else(|| project.data_local_dir().to_path_buf()),
-                cache: project.cache_dir().to_path_buf(),
-            },
+            Some(project) => {
+                let dirs = Self {
+                    config: project.config_dir().to_path_buf(),
+                    state: project
+                        .state_dir()
+                        .map(|path| path.to_path_buf())
+                        .unwrap_or_else(|| project.data_local_dir().to_path_buf()),
+                    cache: project.cache_dir().to_path_buf(),
+                };
+                adopt_legacy_dirs(&dirs);
+                dirs
+            }
             None => {
                 let fallback = std::env::current_dir().unwrap_or_default();
                 Self {
-                    config: fallback.join("fastpotify-config"),
-                    state: fallback.join("fastpotify-state"),
-                    cache: fallback.join("fastpotify-cache"),
+                    config: fallback.join("woofer-config"),
+                    state: fallback.join("woofer-state"),
+                    cache: fallback.join("woofer-cache"),
                 }
             }
         }
@@ -54,7 +58,7 @@ impl AppDirs {
 
     /// The log of the current run, replaced at every start.
     pub fn log_file(&self) -> PathBuf {
-        self.state.join("fastpotify.log")
+        self.state.join("woofer.log")
     }
 
     /// Where a panic is recorded before the process dies of it.
@@ -95,5 +99,75 @@ impl AppDirs {
             std::fs::create_dir_all(dir)?;
         }
         Ok(())
+    }
+}
+
+/// The directories the project kept under its former name. When they are
+/// still there and the new ones are not, they move over, so an update
+/// keeps the sign-in, the settings, and the caches it already paid for.
+fn adopt_legacy_dirs(dirs: &AppDirs) {
+    let Some(project) = ProjectDirs::from("me", "paolino", "fastpotify") else {
+        return;
+    };
+    let legacy = AppDirs {
+        config: project.config_dir().to_path_buf(),
+        state: project
+            .state_dir()
+            .map(|path| path.to_path_buf())
+            .unwrap_or_else(|| project.data_local_dir().to_path_buf()),
+        cache: project.cache_dir().to_path_buf(),
+    };
+    for (old, new) in [
+        (&legacy.config, &dirs.config),
+        (&legacy.state, &dirs.state),
+        (&legacy.cache, &dirs.cache),
+    ] {
+        if old.exists() && !new.exists() && move_tree(old, new).is_err() {
+            log::warn!(
+                "could not move {} to {}; starting fresh there",
+                old.display(),
+                new.display()
+            );
+        }
+    }
+}
+
+/// Moves a directory, crossing a volume the slow way if a rename cannot.
+fn move_tree(old: &Path, new: &Path) -> std::io::Result<()> {
+    std::fs::rename(old, new).or_else(|_| -> std::io::Result<()> {
+        // A rename that fails with an error other than a volume crossing
+        // fails the copy too, so trying it costs nothing but a moment.
+        std::fs::create_dir_all(new)?;
+        for entry in std::fs::read_dir(old)? {
+            let entry = entry?;
+            let target = new.join(entry.file_name());
+            if entry.file_type()?.is_dir() {
+                move_tree(&entry.path(), &target)?;
+            } else {
+                std::fs::copy(entry.path(), &target)?;
+            }
+        }
+        std::fs::remove_dir_all(old)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_update_carries_its_files_to_the_new_name() {
+        let root = std::env::temp_dir().join(format!("woofer-migrate-{}", std::process::id()));
+        let old = root.join("old");
+        std::fs::create_dir_all(old.join("credentials")).unwrap();
+        std::fs::write(old.join("settings.json"), "{}").unwrap();
+        let new = root.join("new").join("nested");
+
+        move_tree(&old, &new).unwrap();
+
+        assert!(new.join("settings.json").is_file());
+        assert!(new.join("credentials").is_dir());
+        assert!(!old.exists());
+        let _ = std::fs::remove_dir_all(root);
     }
 }

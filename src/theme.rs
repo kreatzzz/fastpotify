@@ -1,4 +1,4 @@
-//! Fastpotify's visual language: palette, typography, icons, base widgets.
+//! Woofer's visual language: palette, typography, icons, base widgets.
 //!
 //! Inter carries the interface with real weights (egui's `strong()` only
 //! brightens), IBM-free monospace is unnecessary here, and one Lucide icon
@@ -297,7 +297,7 @@ macro_rules! icons {
     ($($variant:ident => $file:literal),* $(,)?) => {
         &[$((
             Icon::$variant,
-            concat!("bytes://fastpotify-icon-", $file, ".svg"),
+            concat!("bytes://woofer-icon-", $file, ".svg"),
             include_bytes!(concat!("../assets/icons/", $file, ".svg")).as_slice(),
         )),*]
     };

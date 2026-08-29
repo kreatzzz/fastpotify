@@ -5,17 +5,17 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for the report. Without the log, most reports cannot be acted on, so please include it. Fastpotify writes the log of its last run to:
+        Thanks for the report. Without the log, most reports cannot be acted on, so please include it. Woofer writes the log of its last run to:
 
-        - Linux: `~/.local/state/fastpotify/fastpotify.log`
-        - macOS: `~/Library/Application Support/me.paolino.fastpotify/fastpotify.log`
-        - Windows: `%LOCALAPPDATA%\paolino\fastpotify\data\fastpotify.log`
+        - Linux: `~/.local/state/woofer/woofer.log`
+        - macOS: `~/Library/Application Support/me.kreatzzz.woofer/woofer.log`
+        - Windows: `%LOCALAPPDATA%\kreatzzz\woofer\data\woofer.log`
 
-        If the app crashed or vanished, `panic.log` in the same folder says where it died; include that too. Version 0.1.3 kept no log file: run `fastpotify -v` from a terminal (on Windows, `fastpotify.exe -v` from PowerShell) and paste what it prints instead.
+        If the app crashed or vanished, `panic.log` in the same folder says where it died; include that too. Version 0.1.3 kept no log file: run `woofer -v` from a terminal (on Windows, `woofer.exe -v` from PowerShell) and paste what it prints instead.
   - type: input
     id: version
     attributes:
-      label: Fastpotify version and how you installed it
+      label: Woofer version and how you installed it
       placeholder: "0.1.4 from the AUR / the DMG / the Windows installer / Homebrew / FlatPark"
     validations:
       required: true
@@ -56,7 +56,7 @@ body:
   - type: textarea
     id: log
     attributes:
-      label: fastpotify.log
+      label: woofer.log
       description: Reproduce the problem, quit the app, then paste the whole file here (and panic.log, if there is one). Paths are above.
       render: text
     validations:

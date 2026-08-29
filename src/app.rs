@@ -124,7 +124,7 @@ pub struct App {
     /// A hidden app was asked to show itself; the outer loop recreates the
     /// window.
     pub wants_show: bool,
-    /// Commands from control clients (a second `fastpotify <verb>` launch,
+    /// Commands from control clients (a second `woofer <verb>` launch,
     /// a Raycast script), on the platforms where they do not arrive through
     /// MPRIS. Drained every frame.
     control_commands: Option<std::sync::Arc<std::sync::Mutex<Vec<ControlCommand>>>>,
@@ -799,7 +799,7 @@ impl App {
                 Event::UpdateAvailable { version, url } => {
                     let notice = crate::updates::Release { version, url };
                     if self.update.as_ref() != Some(&notice) {
-                        self.toast(format!("Fastpotify {} is out", notice.version));
+                        self.toast(format!("Woofer {} is out", notice.version));
                     }
                     self.update = Some(notice);
                 }
@@ -3612,8 +3612,7 @@ mod tests {
     }
 
     fn headless_app() -> App {
-        let root =
-            std::env::temp_dir().join(format!("fastpotify-volume-test-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("woofer-volume-test-{}", std::process::id()));
         let dirs = AppDirs {
             config: root.join("config"),
             state: root.join("state"),

@@ -1,19 +1,19 @@
 ---
 title: Make It Even Faster
-description: "Fastpotify is quick; Spotify's API rate limits are not. A Spotify app of your own lifts them in five minutes."
+description: "Woofer is quick; Spotify's API rate limits are not. A Spotify app of your own lifts them in five minutes."
 nav_order: 4
 ---
 
 ## The bottleneck is API rate limits
 
-Everything Fastpotify shows you comes from Spotify's Web API, and Spotify
+Everything Woofer shows you comes from Spotify's Web API, and Spotify
 rate-limits that API per *app*: each app may make only so many requests a
-minute. Out of the box Fastpotify uses a public app it shares with other
+minute. Out of the box Woofer uses a public app it shares with other
 open-source players, so at busy times its requests queue behind everyone
 else's. That is the spinner in the top bar, and pages that take a while
 to fill.
 
-An app of your own has that limit to itself. Fastpotify cannot ship one
+An app of your own has that limit to itself. Woofer cannot ship one
 for everyone (Spotify allows a new app only a handful of users), but
 making yours is free and takes five minutes.
 
@@ -45,12 +45,12 @@ now**.
 
 ![Settings, with a personal Spotify app in use](/assets/images/make-it-even-faster.png)
 
-## Use it in Fastpotify
+## Use it in Woofer
 
 1. Open **Settings**, find **Make it even faster**, and paste the
    Client ID.
 2. Click **Switch now**. Your browser opens Spotify's sign-in for your
-   app; approve it and you are back in Fastpotify, which now says
+   app; approve it and you are back in Woofer, which now says
    **Your app is in use**.
 
 That is all. Playing music on this computer is unaffected. To go back to

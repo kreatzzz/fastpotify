@@ -1,10 +1,10 @@
 ---
 layout: home
-title: Fastpotify
+title: Woofer
 description: A fast, native Spotify client for Linux, macOS, and Windows, written in Rust.
 permalink: /
 hero:
-  name: Fastpotify
+  name: Woofer
   text: Spotify, native and fast
   tagline: Your whole Spotify library, local playback, and every Connect device in one lightweight Rust app that opens in a blink, on Linux, macOS, and Windows.
   actions:
@@ -12,14 +12,14 @@ hero:
       text: Download
       link: /download/
     - theme: alt
-      text: What is Fastpotify?
-      link: /what-is-fastpotify/
+      text: What is Woofer?
+      link: /what-is-woofer/
     - theme: alt
       text: GitHub
-      link: https://github.com/crmne/fastpotify
+      link: https://github.com/kreatzzz/woofer
   image:
     src: /screenshot.png
-    alt: "Fastpotify showing the Late night focus playlist with the queue panel open, a track playing, and the library in the sidebar"
+    alt: "Woofer showing the Late night focus playlist with the queue panel open, a track playing, and the library in the sidebar"
     width: 1894
     height: 1037
 
@@ -42,7 +42,7 @@ features:
   - icon: 🔓
     title: Open source
     details: MIT-licensed Rust on egui and librespot, with an honest write-up of how it talks to Spotify.
-    link: https://github.com/crmne/fastpotify
+    link: https://github.com/kreatzzz/woofer
     link_text: Read the source
 ---
 
