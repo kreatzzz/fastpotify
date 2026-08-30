@@ -21,7 +21,7 @@ const MANIFEST: &str = r#"{
     "api": 1,
     "capabilities": ["provider:romanize"],
     "domains": ["clients5.google.com"],
-    "homepage": "https://github.com/kreatzzz/woofer-plugin-romanize"
+    "homepage": "https://github.com/kreatzzz/woofer/tree/main/plugins/romanize"
 }"#;
 
 /// The endpoint the Google Translate page itself uses.

@@ -1,9 +1,10 @@
 # Woofer Plugin System — Design
 
-Status: v1 shipped — the wasmi host, the SDK, and the bundled Translate
-and Romanize plugins are live. The catalog is the `woofer-plugins`
-repository, deployed on Vercel at [usewoofer.com](https://usewoofer.com).
-Runtime: wasmi (wasm32-unknown-unknown), pure compute, no imports.
+Status: v1 shipped — the wasmi host, the SDK, and the first two plugins,
+Translate and Romanize, published on the catalog at
+[usewoofer.com](https://usewoofer.com). The app bundles nothing: the
+built-in engines answer until a plugin is installed. Runtime: wasmi
+(wasm32-unknown-unknown), pure compute, no imports.
 
 ## 1. Goals and non-goals
 
@@ -184,11 +185,9 @@ Rules the chains obey:
 - **Installing appends.** A new provider takes the back of every chain it
   can answer for. Installing never displaces a provider the user has
   already seated.
-- **The bundled plugins are the default chain.** A kind with no ordered
-  chain falls to the bundled defaults: `translate` → the Translate
-  plugin, `romanize` → the Romanize plugin, `lyrics` → no plugin at all
-  (the built-in flow is complete on its own). The built-in engines wait
-  behind them regardless.
+- **An empty chain is the built-ins' own.** A kind with no ordered chain
+  runs on the built-in engines alone — complete on their own for every
+  kind today. The built-ins wait behind the chain regardless.
 - **Membership replaces enable/disable.** A provider answers only the
   kinds whose chains name it; removing it from a chain is the off switch.
 - **Stale ids are skipped.** An id in a chain that no plugin claims — an
@@ -385,7 +384,9 @@ Layers, outermost first:
   lines skipped, identity results discarded.
 - **Translate** (`provider:translate`): newline-batched `dt=t`, chunked
   to the URL budget, source==target skip.
-- Both ship **pre-installed, at the head of their kinds' default chains**;
+- Both are **published on the catalog**, installed separately from it
+  (`woofer://install?plugin=translate` and `…plugin=romanize`); the
+  built-in engines answer until then and whenever they are absent;
   both keep the existing disk-cache discipline in plugin storage. Lyrics
   (`provider:lyrics`) follows as the third plugin, taking the gaps the
   built-in lyrics flow leaves, and completing the dogfood of every v1

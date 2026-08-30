@@ -5212,13 +5212,13 @@ mod tests {
     }
 
     /// A verified download that the manager still refuses is reported,
-    /// not swallowed: the bundled ids are the manager's to protect.
+    /// not swallowed: the digest matches, and the module inside does not.
     #[test]
     fn a_verified_download_the_manager_refuses_is_reported() {
-        // #given: the real wasm of a built-in plugin, with its real hash,
-        // so the verification passes and the refusal is the manager's.
+        // #given: bytes whose hash is honored, but that no loader would
+        // take, so the refusal is the manager's.
         use sha2::{Digest, Sha256};
-        let wasm = crate::plugins::BUNDLED[0].wasm;
+        let wasm = b"not a wasm module".as_slice();
         let sha256: String = Sha256::digest(wasm)
             .iter()
             .map(|byte| format!("{byte:02x}"))
@@ -5232,7 +5232,7 @@ mod tests {
                 publisher: "kreatzzz".into(),
                 version: "1.0.0".into(),
                 domains: vec!["clients5.google.com".into()],
-                wasm_url: "https://usewoofer.com/plugins/translate.wasm".into(),
+                wasm_url: "https://usewoofer.com/plugins/translate/plugin.wasm".into(),
                 sha256,
             },
             receiver,

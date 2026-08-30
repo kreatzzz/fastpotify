@@ -20,7 +20,7 @@ const MANIFEST: &str = r#"{
     "api": 1,
     "capabilities": ["provider:translate"],
     "domains": ["clients5.google.com"],
-    "homepage": "https://github.com/kreatzzz/woofer-plugin-translate"
+    "homepage": "https://github.com/kreatzzz/woofer/tree/main/plugins/translate"
 }"#;
 
 /// The endpoint the Google Translate page itself uses.

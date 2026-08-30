@@ -1,22 +1,17 @@
-//! Which plugins are installed, which are built in, and the order each
-//! kind asks them in.
+//! Which plugins are installed, and the order each kind asks them in.
 //!
-//! The app carries two plugins inside itself; users may add more as files.
-//! Every listing puts the installed ones first, sorted by id, then the
-//! built-ins. Picking who answers a question is no longer a single seat:
-//! each kind walks its own chain, in the order the user set, and the first
-//! provider with data wins — with the built-in engines, never asked here,
-//! standing behind the last link.
+//! The app ships none: plugins arrive from the catalog as files, and the
+//! built-in engines — never listed here — stand behind every chain. Each
+//! kind walks its own chain, in the order the user set, and the first
+//! provider with data wins.
 
 use std::path::{Path, PathBuf};
 
 use crate::paths::AppDirs;
-use crate::plugins::{BUNDLED, BUNDLED_IDS, PluginManifest};
-use crate::settings::ProviderChains;
+use crate::plugins::PluginManifest;
 use crate::translate::Translation;
 
-/// A plugin as the interface sees it: who it is, what it may do, and
-/// whether it came with the app.
+/// A plugin as the interface sees it: who it is and what it may do.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Plugin {
     pub id: String,
@@ -26,11 +21,10 @@ pub struct Plugin {
     pub homepage: String,
     pub capabilities: Vec<String>,
     pub domains: Vec<String>,
-    pub bundled: bool,
 }
 
 impl Plugin {
-    fn from_manifest(manifest: PluginManifest, bundled: bool) -> Self {
+    fn from_manifest(manifest: PluginManifest) -> Self {
         Self {
             id: manifest.id,
             name: manifest.name,
@@ -39,7 +33,6 @@ impl Plugin {
             homepage: manifest.homepage,
             capabilities: manifest.capabilities,
             domains: manifest.domains,
-            bundled,
         }
     }
 
@@ -69,10 +62,9 @@ impl Plugin {
     }
 }
 
-/// Every plugin the app knows: the ones installed on disk first, sorted by
-/// id, then the ones it was built with. A plugin whose manifest is missing
-/// or unreadable is skipped with a note, never a failure — one bad file
-/// must not cost the rest their page.
+/// Every plugin installed on disk, sorted by id. A plugin whose manifest
+/// is missing or unreadable is skipped with a note, never a failure — one
+/// bad file must not cost the rest their page.
 pub fn list(dirs: &AppDirs) -> Vec<Plugin> {
     let dir = dirs.plugins_dir();
     let mut plugins = Vec::new();
@@ -99,39 +91,11 @@ pub fn list(dirs: &AppDirs) -> Vec<Plugin> {
             continue;
         };
         match PluginManifest::parse(&text) {
-            Ok(manifest) => plugins.push(Plugin::from_manifest(manifest, false)),
+            Ok(manifest) => plugins.push(Plugin::from_manifest(manifest)),
             Err(error) => log::warn!("the manifest of the plugin {id} is unusable: {error}"),
         }
     }
-    for bundled in BUNDLED {
-        match PluginManifest::parse(bundled.manifest) {
-            Ok(manifest) => plugins.push(Plugin::from_manifest(manifest, true)),
-            Err(error) => log::warn!("a built-in plugin has an unusable manifest: {error}"),
-        }
-    }
     plugins
-}
-
-/// The chain a kind asks when the user has ordered none: the bundled
-/// plugins stand in, and lyrics — whose permanent first link is the
-/// built-in flow itself — starts with no plugin at all.
-fn default_chain(kind: &str) -> Vec<String> {
-    match kind {
-        "translate" => vec!["translate".to_string()],
-        "romanize" => vec!["romanize".to_string()],
-        _ => Vec::new(),
-    }
-}
-
-/// The ids kind `kind` asks, in order: the user's chain when they have
-/// one, the bundled default when they have not.
-pub fn chain_ids(chains: &ProviderChains, kind: &str) -> Vec<String> {
-    let held = chains.for_kind(kind);
-    if held.is_empty() {
-        default_chain(kind)
-    } else {
-        held.clone()
-    }
 }
 
 /// Resolves a chain against the known plugins: each id in the order the
@@ -156,12 +120,6 @@ pub fn chain_plugins<'a>(all: &'a [Plugin], chain: &[String], kind: &str) -> Vec
 /// slow module never holds the frame.
 pub fn install_blocking(dirs: &AppDirs, wasm: &[u8]) -> Result<Plugin, String> {
     let manifest = crate::plugins::host::validate(wasm)?;
-    if BUNDLED_IDS.contains(&manifest.id.as_str()) {
-        return Err(format!(
-            "the id {} belongs to a plugin built into the app",
-            manifest.id
-        ));
-    }
     if manifest.id.contains(['/', '\\', '\0']) || manifest.id == ".." {
         return Err(format!(
             "the id {:?} cannot be a plugin's file name",
@@ -180,7 +138,7 @@ pub fn install_blocking(dirs: &AppDirs, wasm: &[u8]) -> Result<Plugin, String> {
         let _ = std::fs::remove_file(dir.join(format!("{}.wasm", manifest.id)));
         return Err(format!("cannot write the manifest: {error}"));
     }
-    Ok(Plugin::from_manifest(manifest, false))
+    Ok(Plugin::from_manifest(manifest))
 }
 
 /// Installs a plugin, off the runtime's blocking threads: the interface
@@ -193,13 +151,8 @@ pub async fn install(dirs: &AppDirs, wasm: Vec<u8>) -> Result<Plugin, String> {
 }
 
 /// Removes an installed plugin's two files. Chains are the settings', so
-/// dropping the id from them is the caller's half of an uninstall; the
-/// built-ins have no files to remove.
+/// dropping the id from them is the caller's half of an uninstall.
 pub fn remove(dirs: &AppDirs, id: &str) {
-    if BUNDLED_IDS.contains(&id) {
-        log::warn!("the plugin {id} is built into the app; it has no files to remove");
-        return;
-    }
     let dir = dirs.plugins_dir();
     for name in [format!("{id}.wasm"), format!("{id}.json")] {
         if let Err(error) = std::fs::remove_file(dir.join(&name))
@@ -210,16 +163,8 @@ pub fn remove(dirs: &AppDirs, id: &str) {
     }
 }
 
-/// The wasm a plugin runs from: the bytes the app was built with for a
-/// built-in, the installed file for everything else.
+/// The wasm a plugin runs from: its installed file.
 pub fn wasm_bytes(dirs: &AppDirs, plugin: &Plugin) -> Result<Vec<u8>, String> {
-    for bundled in BUNDLED {
-        if let Ok(manifest) = PluginManifest::parse(bundled.manifest)
-            && manifest.id == plugin.id
-        {
-            return Ok(bundled.wasm.to_vec());
-        }
-    }
     std::fs::read(dirs.plugins_dir().join(format!("{}.wasm", plugin.id)))
         .map_err(|error| format!("cannot read the plugin {}: {error}", plugin.id))
 }
@@ -311,31 +256,24 @@ mod tests {
 
     /// A listed plugin without a folder behind it, for the pure lookups.
     fn plugin(id: &str, capability: &str) -> Plugin {
-        Plugin::from_manifest(
-            PluginManifest::parse(&manifest_text(id, capability)).unwrap(),
-            false,
-        )
+        Plugin::from_manifest(PluginManifest::parse(&manifest_text(id, capability)).unwrap())
     }
 
     #[test]
-    fn an_empty_folder_leaves_the_built_ins() {
+    fn an_empty_folder_lists_nothing() {
         let dirs = dirs("empty");
-        let plugins = list(&dirs);
-        assert_eq!(plugins.len(), 2);
-        assert!(plugins.iter().all(|plugin| plugin.bundled));
+        assert!(list(&dirs).is_empty());
         let _ = std::fs::remove_dir_all(dirs.state.parent().unwrap());
     }
 
     #[test]
-    fn installed_plugins_come_first_sorted_and_the_built_ins_follow() {
+    fn installed_plugins_are_listed_sorted_by_id() {
         let dirs = dirs("order");
         install_manually(&dirs, "deepl", "provider:translate");
         install_manually(&dirs, "acme", "provider:romanize");
         let plugins = list(&dirs);
         let ids: Vec<&str> = plugins.iter().map(|plugin| plugin.id.as_str()).collect();
-        assert_eq!(ids, vec!["acme", "deepl", "translate", "romanize"]);
-        assert!(!plugins[0].bundled);
-        assert!(plugins[2].bundled);
+        assert_eq!(ids, vec!["acme", "deepl"]);
         let _ = std::fs::remove_dir_all(dirs.state.parent().unwrap());
     }
 
@@ -357,22 +295,6 @@ mod tests {
         // The lyrics plugin only answers its own kind's call.
         let lyrics_chain = chain_plugins(&all, &["words".to_string()], "translate");
         assert!(lyrics_chain.is_empty());
-    }
-
-    #[test]
-    fn an_empty_chain_falls_to_the_bundled_defaults() {
-        let chains = ProviderChains::default();
-        assert_eq!(chain_ids(&chains, "translate"), vec!["translate"]);
-        assert_eq!(chain_ids(&chains, "romanize"), vec!["romanize"]);
-        // Lyrics starts with no plugin: the built-in flow is its first
-        // link, and no plugin asks after it until one is installed.
-        assert_eq!(chain_ids(&chains, "lyrics"), Vec::<String>::new());
-        // An ordered chain is the user's, not the default's.
-        let chains = ProviderChains {
-            translate: vec!["deepl".to_string()],
-            ..ProviderChains::default()
-        };
-        assert_eq!(chain_ids(&chains, "translate"), vec!["deepl"]);
     }
 
     #[test]
@@ -403,7 +325,7 @@ mod tests {
         std::fs::write(dir.join("lonely.wasm"), b"placeholder").unwrap();
         std::fs::write(dir.join("bad.json"), "not json").unwrap();
         let plugins = list(&dirs);
-        assert!(plugins.iter().all(|plugin| plugin.bundled));
+        assert!(plugins.is_empty());
         let _ = std::fs::remove_dir_all(dirs.state.parent().unwrap());
     }
 
@@ -416,15 +338,10 @@ mod tests {
     }
 
     #[test]
-    fn removing_takes_both_files_and_never_touches_a_builtin() {
+    fn removing_takes_both_files() {
         let dirs = dirs("remove");
         install_manually(&dirs, "deepl", "provider:translate");
         let dir = dirs.plugins_dir();
-        // A built-in has no files, but a stray impostor must survive a
-        // remove aimed at the real one.
-        std::fs::write(dir.join("translate.wasm"), b"impostor").unwrap();
-        remove(&dirs, "translate");
-        assert!(dir.join("translate.wasm").exists());
         remove(&dirs, "deepl");
         assert!(!dir.join("deepl.wasm").exists());
         assert!(!dir.join("deepl.json").exists());

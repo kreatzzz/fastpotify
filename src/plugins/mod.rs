@@ -4,9 +4,10 @@
 //! A plugin is one `.wasm` file (pure compute, no imports) plus a manifest.
 //! The host [`host`] runs it inside wasmi with fuel and a memory cap, does
 //! every fetch itself, and refuses anything the manifest does not allow.
-//! [`manager`] knows which plugins are installed, which are built in, and
-//! the order each kind asks them in. The app starts fully functional with
-//! none of them.
+//! [`manager`] knows which plugins are installed and the order each kind
+//! asks them in. The app ships none: the built-in engines answer when no
+//! plugin is installed, and the catalog at usewoofer.com is where plugins
+//! come from.
 
 pub mod catalog;
 pub mod host;
@@ -71,69 +72,40 @@ impl PluginManifest {
     }
 }
 
-/// A plugin compiled into the app: its wasm and the manifest the host
-/// believes about it, both frozen at build time.
-pub(crate) struct Bundled {
-    pub wasm: &'static [u8],
-    pub manifest: &'static str,
-}
-
-/// The translation plugin that ships with the app. The wasm is compiled
-/// separately and dropped in at `assets/plugins/translate.wasm`; until it
-/// is, the placeholder bytes fail to load and the built-in translator
-/// answers instead.
-const TRANSLATE: Bundled = Bundled {
-    wasm: include_bytes!("../../assets/plugins/translate.wasm"),
-    manifest: r#"{"id":"translate","name":"Translate","publisher":"kreatzzz","version":"1.0.0","api":1,"capabilities":["provider:translate"],"domains":["clients5.google.com"],"homepage":"https://github.com/kreatzzz/woofer-plugin-translate"}"#,
-};
-
-/// The romanization plugin that ships with the app, alongside `translate`.
-const ROMANIZE: Bundled = Bundled {
-    wasm: include_bytes!("../../assets/plugins/romanize.wasm"),
-    manifest: r#"{"id":"romanize","name":"Romanize","publisher":"kreatzzz","version":"1.0.0","api":1,"capabilities":["provider:romanize"],"domains":["clients5.google.com"],"homepage":"https://github.com/kreatzzz/woofer-plugin-romanize"}"#,
-};
-/// Every plugin the app carries inside itself.
-pub(crate) const BUNDLED: &[Bundled] = &[TRANSLATE, ROMANIZE];
-
-/// The ids the bundled manifests claim, for callers that must never touch
-/// an installed file belonging to one of them.
-pub(crate) const BUNDLED_IDS: &[&str] = &["translate", "romanize"];
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_bundled_plugins_load_and_say_who_they_are() {
-        for bundled in BUNDLED {
-            let loaded = host::validate(bundled.wasm).expect("a bundled plugin loads");
-            let claimed = PluginManifest::parse(bundled.manifest).expect("sidecar parses");
-            assert_eq!(loaded.api, ABI_VERSION);
-            assert_eq!(loaded, claimed, "the module and its sidecar must agree");
-        }
+    /// The wasm the plugin crates last built, when they did: the live
+    /// test answers through those. Nothing in the app carries plugins,
+    /// so the test skips quietly when the artifacts are not around.
+    fn built_artifact(id: &str) -> Option<Vec<u8>> {
+        std::fs::read(format!(
+            "plugins/{id}/target/wasm32-unknown-unknown/release/woofer_plugin_{id}.wasm"
+        ))
+        .ok()
     }
 
     #[test]
-    #[ignore = "speaks to the live endpoint"]
-    fn the_bundled_plugins_answer_over_the_network() {
+    #[ignore = "speaks to the live endpoint, and needs the plugin crates built"]
+    fn the_built_plugins_answer_over_the_network() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let input = ["こんにちは、世界"];
-        for bundled in BUNDLED {
-            let manifest = PluginManifest::parse(bundled.manifest).unwrap();
+        for id in ["translate", "romanize"] {
+            let Some(wasm) = built_artifact(id) else {
+                eprintln!("the {id} crate has no built wasm; skipping");
+                continue;
+            };
+            let manifest = host::validate(&wasm).expect("the plugin loads");
             let kind = match manifest.capabilities.first().map(String::as_str) {
                 Some(capability) => capability
                     .strip_prefix(PROVIDER_CAPABILITY)
                     .expect("a provider capability")
                     .to_string(),
-                None => panic!("bundled {} claims no capability", manifest.id),
+                None => panic!("the {id} plugin claims no capability"),
             };
-            let found = runtime.block_on(host::run_translation(
-                bundled.wasm,
-                &manifest,
-                &kind,
-                "en",
-                &input,
-            ));
+            let found =
+                runtime.block_on(host::run_translation(&wasm, &manifest, &kind, "en", &input));
             let translation = found.expect("the plugin answers").expect("not a miss");
             let own = match kind.as_str() {
                 "translate" => &translation.translated,
@@ -143,33 +115,6 @@ mod tests {
                 own.iter()
                     .any(|line| line.as_deref().is_some_and(|line| !line.is_empty())),
                 "{kind} produced nothing: {translation:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_bundled_manifests_are_well_formed() {
-        for bundled in BUNDLED {
-            let manifest = PluginManifest::parse(bundled.manifest).unwrap();
-            assert_eq!(manifest.api, ABI_VERSION);
-            assert!(!manifest.capabilities.is_empty());
-            for capability in &manifest.capabilities {
-                assert!(
-                    capability.starts_with(PROVIDER_CAPABILITY),
-                    "a bundled provider plugin claims a provider capability"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn the_bundled_id_list_matches_the_bundled_manifests() {
-        for bundled in BUNDLED {
-            let manifest = PluginManifest::parse(bundled.manifest).unwrap();
-            assert!(
-                BUNDLED_IDS.contains(&manifest.id.as_str()),
-                "{} is bundled but not listed as such",
-                manifest.id
             );
         }
     }

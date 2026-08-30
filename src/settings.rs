@@ -47,8 +47,9 @@ impl ThemeChoice {
 }
 
 /// The provider plugins each kind asks, in the order it asks them. A kind
-/// with an empty chain runs on the built-in engines alone; the bundled
-/// plugins stand in as the chain when one is empty.
+/// with an empty chain runs on the built-in engines alone. Installing a
+/// provider appends it to the end — the user drags it up if they want it
+/// earlier.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProviderChains {

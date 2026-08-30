@@ -30,9 +30,9 @@ marketplace, and a UI direction the upstream maintainer does not want. Read
 | `src/player.rs` | The librespot engine (playback, Connect) |
 | `src/lyrics.rs` | LRCLIB lyrics: fetch, match, LRC parse, 30-day disk cache |
 | `src/translate.rs` | Built-in translator (keyless Google `clients5` endpoint), Lingva last-resort, the retry/backoff helper, and the two narrow entry points `fetch_translation_only` / `fetch_romanization_only` the plugin fallback uses |
-| `src/plugins/mod.rs` | Plugin manifest model, the `provider:` taxonomy, the two **bundled** plugins (wasm via `include_bytes!` + frozen sidecar manifests) |
+| `src/plugins/mod.rs` | Plugin manifest model + the `provider:` taxonomy |
 | `src/plugins/host.rs` | The wasmi sandbox: fuel, memory cap, the two-step `plan`/`fulfil` ABI, the `{"miss":true}` convention, domain-enforced fetching |
-| `src/plugins/manager.rs` | Installed vs bundled plugins, **provider chains** (per-kind ordered fallback lists), install/remove, cache keys |
+| `src/plugins/manager.rs` | Installed plugins, **provider chains** (per-kind ordered fallback lists), install/remove, cache keys |
 | `src/plugins/catalog.rs` | The `woofer://install` resolver: registry fetch, slug lookup, sha256 check |
 | `src/ui/` | One file per page/panel; `theme.rs` is the design system (Palette, Lucide icons, buttons) |
 | `src/settings.rs` | The one JSON settings file; `SessionState` for restore |
@@ -54,18 +54,22 @@ cargo test --features demo # adds the headless render of every page
 cargo test --lib plugins -- --ignored --nocapture   # LIVE Google round-trip through both plugins
 ```
 
-Rebuilding the bundled plugins (only after editing `plugins/*`):
+Rebuilding the published plugins (only after editing `plugins/*`), then
+syncing the catalog repo's `plugins/<id>/plugin.wasm` and its
+`registry.json` digest:
 
 ```bash
 rustup target add wasm32-unknown-unknown
 cd plugins/translate && cargo build --release --target wasm32-unknown-unknown
-cp target/wasm32-unknown-unknown/release/woofer_plugin_translate.wasm ../../assets/plugins/translate.wasm
+# the artifact is target/wasm32-unknown-unknown/release/woofer_plugin_translate.wasm
 # same for romanize; both plugins' harness tests run with plain `cargo test` in their crate
 ```
 
 ## The current state (2026-08-30)
 
-- `main` carries everything, now including the **upstream 0.4.0-rc1 merge**
+- `main` carries everything, now including the **un-bundling** (the app
+  ships no plugins; Translate/Romanize are catalog installs) and the
+  **upstream 0.4.0-rc1 merge**
   (equalizer, Winamp skin mode, RTL shaping, API gateway, dual-grant auth,
   playback resume) and on top of it: **provider chains** (ordered
   per-kind fallback lists, `provider:lyrics|translate|romanize`
@@ -90,10 +94,9 @@ cp target/wasm32-unknown-unknown/release/woofer_plugin_translate.wasm ../../asse
 
 - **Demo mode reads your real `session.json`** (`last_page` restores a real
   artist page and renders "Loading…"). Always pass `--demo-page` explicitly.
-- **`assets/plugins/*.wasm` are committed build artifacts.** The sidecar
-  manifests in `src/plugins/mod.rs` must match each module's own
-  `manifest()` output — the test `the_bundled_plugins_load_and_say_who_they_are`
-  enforces it (homepages point at the plugin repos, not the main repo).
+- **Nothing plugin-shaped ships in the binary.** The built-in engines are
+  the fallback; the two official plugins live in the catalog repo, whose
+  digests must match their wasm after every rebuild.
 - **wasmi is pinned to 0.31 in two places** (the app's Cargo.toml and the
   SDK's harness dev-dependency). Bump both together.
 - **ABI v1**: exports `memory, alloc, dealloc, abi_version, manifest,

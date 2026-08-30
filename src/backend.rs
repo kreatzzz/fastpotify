@@ -2098,7 +2098,7 @@ where
     Fut: std::future::Future<Output = Result<Option<T>, String>>,
 {
     use crate::plugins::manager;
-    let chain = manager::chain_ids(chains, kind);
+    let chain = chains.for_kind(kind).clone();
     for plugin in manager::chain_plugins(plugins, &chain, kind) {
         match ask(plugin).await {
             Ok(Some(found)) => return Some(found),
@@ -2212,7 +2212,6 @@ mod tests {
             homepage: String::new(),
             capabilities: vec![crate::plugins::PluginManifest::provider_capability(kind)],
             domains: Vec::new(),
-            bundled: false,
         }
     }
 
@@ -2286,10 +2285,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_empty_chain_stands_on_the_bundled_defaults_and_finds_none_here() {
-        // No plugin carries the bundled ids in this test's list, so the
-        // default chain resolves to nothing and the built-ins — standing
-        // behind the walk, never inside it — would answer.
+    async fn an_empty_chain_resolves_to_nothing_and_the_built_ins_answer() {
+        // No plugin is in the chain, so the walk resolves to nothing and
+        // the built-ins — standing behind the walk, never inside it —
+        // would answer.
         let plugins = vec![provider("acme", "translate")];
         let found = first_provider_data(
             &plugins,

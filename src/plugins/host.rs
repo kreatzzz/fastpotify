@@ -783,8 +783,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_module_that_cannot_load_fails_its_run_without_a_panic() {
-        let manifest =
-            PluginManifest::parse(crate::plugins::BUNDLED.first().unwrap().manifest).unwrap();
+        let manifest = PluginManifest::parse(
+            r#"{"id":"acme","name":"Acme","publisher":"kreatzzz","version":"1.0.0","api":1,
+                "capabilities":["provider:translate"],"domains":["clients5.google.com"]}"#,
+        )
+        .unwrap();
         // Placeholder bytes are not wasm; whatever they ever are, the run
         // must end in an error the host can fall back on.
         let error = run_translation(b"placeholder", &manifest, "translate", "en", &["hello"])

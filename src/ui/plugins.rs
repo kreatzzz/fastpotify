@@ -68,8 +68,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     });
 }
 
-/// One kind's section: its chain, in the order it is asked — the bundled
-/// default standing in when the user has ordered none — then any
+/// One kind's section: its chain, in the order the user set, then any
 /// installed provider of the kind outside the chain, with a seat waiting
 /// at the back.
 fn provider_section(
@@ -81,11 +80,31 @@ fn provider_section(
 ) {
     let resolved = crate::plugins::manager::chain_plugins(
         plugins,
-        &crate::plugins::manager::chain_ids(&app.settings.provider_chains, kind),
+        app.settings.provider_chains.for_kind(kind),
         kind,
     );
     if resolved.is_empty() {
-        theme::subtle(ui, palette, "No plugins — the built-in source answers.");
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            theme::subtle(
+                ui,
+                palette,
+                "No plugins — the built-in source answers. Find one at",
+            );
+            if theme::text(
+                ui,
+                "usewoofer.com/plugins",
+                theme::medium(13.0),
+                palette.accent,
+            )
+            .interact(egui::Sense::click())
+            .clicked()
+            {
+                app.actions
+                    .push(Action::OpenUrl("https://usewoofer.com/plugins".into()));
+            }
+            theme::subtle(ui, palette, ".");
+        });
     }
     let last = resolved.len().saturating_sub(1);
     for (index, plugin) in resolved.iter().enumerate() {
@@ -246,16 +265,15 @@ fn plugin_row(
                     add_to_chain(app, kind, &plugin.id);
                 }
             } else {
-                if !plugin.bundled
-                    && theme::icon_button(
-                        ui,
-                        Icon::Trash,
-                        16.0,
-                        palette.secondary,
-                        palette.text,
-                        "Remove",
-                    )
-                    .clicked()
+                if theme::icon_button(
+                    ui,
+                    Icon::Trash,
+                    16.0,
+                    palette.secondary,
+                    palette.text,
+                    "Remove",
+                )
+                .clicked()
                 {
                     uninstall(app, &plugin.id);
                 }
@@ -298,9 +316,6 @@ fn plugin_row(
                 .clicked()
             {
                 app.actions.push(Action::OpenUrl(plugin.homepage.clone()));
-            }
-            if plugin.bundled {
-                chip(ui, palette, "bundled");
             }
         });
     });
@@ -351,7 +366,7 @@ fn capability_label(capability: &str) -> &str {
         .unwrap_or(capability)
 }
 
-/// A small quiet pill, for what a plugin may do and for the bundled marker.
+/// A small quiet pill, for what a plugin may do.
 fn chip(ui: &mut egui::Ui, palette: &Palette, label: &str) {
     let galley =
         ui.painter()
