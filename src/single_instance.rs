@@ -42,9 +42,9 @@
 //! now-playing snapshot carries the artwork URL and the saved flag a key
 //! needs to draw itself. A client polls; nothing is pushed.
 //!
-//! Anything on the machine can reach the port, so the two verbs that carry
-//! free text (`play-uri`, `transfer`) validate their argument here rather
-//! than handing the app an arbitrary string.
+//! Anything on the machine can reach the port, so the verbs that carry
+//! free text (`play-uri`, `transfer`, `url`) validate their argument here
+//! rather than handing the app an arbitrary string.
 
 /// The name held for the lifetime of the running instance.
 #[cfg(target_os = "linux")]
@@ -97,6 +97,10 @@ pub enum ControlCommand {
     /// Refresh the device list. Sent by the `devices` read, which answers
     /// from a snapshot that is only as fresh as the app's last look.
     RefreshDevices,
+    /// A `woofer://…` link the OS handed to a second launch, forwarded
+    /// here. The app parses it for itself and asks before anything is
+    /// installed.
+    OpenUrl(String),
 }
 
 /// Holds whatever marks this process as the running instance. Dropping it
@@ -346,6 +350,7 @@ fn parse(line: &str) -> Option<Request> {
         ("save-toggle", None) => ControlCommand::ToggleSaved,
         ("play-uri", Some(uri)) => ControlCommand::PlayUri(spotify_uri(uri)?),
         ("transfer", Some(id)) => ControlCommand::Transfer(device_id(id)?),
+        ("url", Some(url)) => ControlCommand::OpenUrl(woofer_link(url)?),
         ("nowplaying", None) => return Some(Request::NowPlaying),
         ("devices", None) => return Some(Request::Devices),
         _ => return None,
@@ -376,6 +381,21 @@ fn device_id(text: &str) -> Option<String> {
         && text
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'));
+    shaped.then(|| text.to_owned())
+}
+
+/// A `woofer://…` link, as the OS hands one to a launch and that launch
+/// forwards here. Checked like the other free-text verbs: whatever local
+/// process felt like it can reach the port, so the app never sees a string
+/// nobody looked at. Percent-escapes carry anything beyond plain ASCII,
+/// and the app parses the link for itself; this is only the shape.
+#[cfg(not(target_os = "linux"))]
+fn woofer_link(text: &str) -> Option<String> {
+    let shaped = text.starts_with("woofer://")
+        && text.len() <= 512
+        && text
+            .chars()
+            .all(|c| c.is_ascii() && !c.is_whitespace() && !c.is_control());
     shaped.then(|| text.to_owned())
 }
 
@@ -547,6 +567,12 @@ mod tests {
             command("woofer:transfer a1b2c3d4e5"),
             Some(ControlCommand::Transfer("a1b2c3d4e5".to_owned()))
         );
+        assert_eq!(
+            command("woofer:url woofer://install?plugin=translate"),
+            Some(ControlCommand::OpenUrl(
+                "woofer://install?plugin=translate".to_owned()
+            ))
+        );
         assert!(matches!(
             parse("woofer:nowplaying"),
             Some(Request::NowPlaying)
@@ -581,6 +607,19 @@ mod tests {
         assert!(command("woofer:repeat-set sometimes").is_none());
         assert!(command("woofer:shuffle-set maybe").is_none());
         assert!(command("woofer:seek-to -1").is_none());
+    }
+
+    /// The `url` verb is how the OS's deep-link launch reaches a running
+    /// instance, so it is exactly as picky about what a link is as the
+    /// other free-text verbs are about theirs.
+    #[test]
+    fn refuses_arguments_that_are_not_shaped_like_a_woofer_link() {
+        assert!(command("woofer:url https://usewoofer.com/install?plugin=translate").is_none());
+        assert!(command("woofer:url spotify:track:trk1").is_none());
+        assert!(command("woofer:url woofer://install?plugin=a b").is_none());
+        assert!(command("woofer:url woofer://install?plugin=tr\u{e0}ns").is_none());
+        assert!(command("woofer:url").is_none());
+        assert!(command(&format!("woofer:url woofer://{}", "x".repeat(600))).is_none());
     }
 
     /// The whole channel over a real socket: what `woofer next` sends is

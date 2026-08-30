@@ -1,5 +1,5 @@
-//! The Plugins page: install them, read what they may do, switch and
-//! remove them.
+//! The Plugins page: install them, read what they may do, order who is
+//! asked first, and remove them.
 
 use egui::{Align, CornerRadius, Frame, Layout, Margin, Sense, Stroke, Vec2};
 
@@ -8,9 +8,15 @@ use crate::model::Action;
 use crate::plugins::manager::Plugin;
 use crate::theme::{self, Icon, Palette};
 
-use super::widgets;
-
 const URL_DRAFT_ID: &str = "plugin-url-draft";
+
+/// The provider kinds, in the order the page shows them: lyrics, then the
+/// two per-line aids.
+const KINDS: &[(&str, &str)] = &[
+    ("lyrics", "Lyrics providers"),
+    ("translate", "Translation providers"),
+    ("romanize", "Romanization providers"),
+];
 
 fn section(
     ui: &mut egui::Ui,
@@ -45,28 +51,77 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     theme::subtle(
         ui,
         &palette,
-        "Plugins run in a sandbox and can only ask Woofer to fetch what they declare.",
+        "Plugins run in a sandbox and can only ask Woofer to fetch what they declare. Each kind asks its providers in order, and the first with an answer wins.",
     );
 
     install_controls(app, ui, &palette);
 
     // Cloned so the rows can act on the app while reading it.
     let plugins = app.plugins.clone();
-    section(ui, &palette, "Installed", |ui| {
-        if plugins.is_empty() {
-            widgets::empty_state(
-                ui,
-                &palette,
-                Icon::Puzzle,
-                "No plugins installed",
-                "Install one from a URL, or drag a .wasm file onto the window.",
-            );
-            return;
-        }
-        for plugin in &plugins {
-            plugin_row(app, ui, &palette, plugin);
-        }
+    for (kind, title) in KINDS {
+        section(ui, &palette, title, |ui| {
+            provider_section(app, ui, &palette, &plugins, kind);
+        });
+    }
+    section(ui, &palette, "Other surfaces", |ui| {
+        theme::subtle(ui, &palette, "Sidebar panels — coming soon.");
     });
+}
+
+/// One kind's section: its chain, in the order it is asked — the bundled
+/// default standing in when the user has ordered none — then any
+/// installed provider of the kind outside the chain, with a seat waiting
+/// at the back.
+fn provider_section(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    plugins: &[Plugin],
+    kind: &str,
+) {
+    let resolved = crate::plugins::manager::chain_plugins(
+        plugins,
+        &crate::plugins::manager::chain_ids(&app.settings.provider_chains, kind),
+        kind,
+    );
+    if resolved.is_empty() {
+        theme::subtle(ui, palette, "No plugins — the built-in source answers.");
+    }
+    let last = resolved.len().saturating_sub(1);
+    for (index, plugin) in resolved.iter().enumerate() {
+        plugin_row(
+            app,
+            ui,
+            palette,
+            plugin,
+            kind,
+            RowControls {
+                can_move_up: index > 0,
+                can_move_down: index < last,
+                outside_chain: false,
+            },
+        );
+    }
+    let wanted = crate::plugins::PluginManifest::provider_capability(kind);
+    for plugin in plugins {
+        if !resolved.iter().any(|held| held.id == plugin.id)
+            && plugin.capabilities.contains(&wanted)
+        {
+            plugin_row(
+                app,
+                ui,
+                palette,
+                plugin,
+                kind,
+                RowControls {
+                    can_move_up: false,
+                    can_move_down: false,
+                    outside_chain: true,
+                },
+            );
+        }
+    }
+    ui.add_space(2.0);
 }
 
 /// The URL field and its pill. The draft lives in egui's memory, so the
@@ -129,11 +184,28 @@ fn install_controls(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
     });
 }
 
-fn plugin_row(app: &mut App, ui: &mut egui::Ui, palette: &Palette, plugin: &Plugin) {
+/// How one row's controls read: seated in the chain it moves up or down;
+/// outside it, there is only the seat at the back to take.
+struct RowControls {
+    can_move_up: bool,
+    can_move_down: bool,
+    outside_chain: bool,
+}
+
+/// One provider's row. The row acts on the kind of the section it sits
+/// in, not the plugin's first claim.
+fn plugin_row(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    plugin: &Plugin,
+    kind: &str,
+    controls: RowControls,
+) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         ui.vertical(|ui| {
-            ui.set_width(ui.available_width() - 200.0);
+            ui.set_width(ui.available_width() - 240.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 theme::text(ui, plugin.name.clone(), theme::semibold(14.0), palette.text);
@@ -160,9 +232,59 @@ fn plugin_row(app: &mut App, ui: &mut egui::Ui, palette: &Palette, plugin: &Plug
         // The control area lays out right-to-left: add the rightmost item first.
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
-            let mut enabled = plugin.enabled;
-            if widgets::switch(ui, palette, &mut enabled).changed() {
-                app.set_plugin_enabled(&plugin.id, enabled);
+            if controls.outside_chain {
+                if theme::icon_button(
+                    ui,
+                    Icon::Plus,
+                    16.0,
+                    palette.secondary,
+                    palette.text,
+                    "Ask this one last",
+                )
+                .clicked()
+                {
+                    add_to_chain(app, kind, &plugin.id);
+                }
+            } else {
+                if !plugin.bundled
+                    && theme::icon_button(
+                        ui,
+                        Icon::Trash,
+                        16.0,
+                        palette.secondary,
+                        palette.text,
+                        "Remove",
+                    )
+                    .clicked()
+                {
+                    uninstall(app, &plugin.id);
+                }
+                if controls.can_move_down
+                    && theme::icon_button(
+                        ui,
+                        Icon::ChevronDown,
+                        16.0,
+                        palette.secondary,
+                        palette.text,
+                        "Ask this one later",
+                    )
+                    .clicked()
+                {
+                    move_in_chain(app, kind, &plugin.id, false);
+                }
+                if controls.can_move_up
+                    && theme::icon_button(
+                        ui,
+                        Icon::ChevronUp,
+                        16.0,
+                        palette.secondary,
+                        palette.text,
+                        "Ask this one first",
+                    )
+                    .clicked()
+                {
+                    move_in_chain(app, kind, &plugin.id, true);
+                }
             }
             if !plugin.homepage.is_empty()
                 && theme::icon_button(
@@ -179,28 +301,53 @@ fn plugin_row(app: &mut App, ui: &mut egui::Ui, palette: &Palette, plugin: &Plug
             }
             if plugin.bundled {
                 chip(ui, palette, "bundled");
-            } else if theme::icon_button(
-                ui,
-                Icon::Trash,
-                16.0,
-                palette.secondary,
-                palette.text,
-                "Remove",
-            )
-            .clicked()
-            {
-                app.remove_plugin(&plugin.id);
             }
         });
     });
     ui.add_space(10.0);
 }
 
+/// Swaps a provider with its neighbour in its kind's chain. The order
+/// lives in the settings, so the ordinary persistence carries it to disk.
+fn move_in_chain(app: &mut App, kind: &str, id: &str, up: bool) {
+    let chain = app.settings.provider_chains.for_kind_mut(kind);
+    let Some(index) = chain.iter().position(|held| held == id) else {
+        return;
+    };
+    let target = if up {
+        index.checked_sub(1)
+    } else {
+        Some(index + 1).filter(|target| *target < chain.len())
+    };
+    if let Some(target) = target {
+        chain.swap(index, target);
+        app.mark_settings_dirty();
+    }
+}
+
+/// Gives a provider the back of its kind's chain: it answers after
+/// everyone the user has already ordered.
+fn add_to_chain(app: &mut App, kind: &str, id: &str) {
+    let chain = app.settings.provider_chains.for_kind_mut(kind);
+    if !chain.iter().any(|held| held == id) {
+        chain.push(id.to_string());
+        app.mark_settings_dirty();
+    }
+}
+
+/// An uninstall is the file and its seat: the plugin leaves every chain
+/// it sat in before its files go.
+fn uninstall(app: &mut App, id: &str) {
+    app.settings.provider_chains.drop_id(id);
+    app.mark_settings_dirty();
+    app.remove_plugin(id);
+}
+
 /// The copy of a capability chip: the prefix names the provider kind, which
 /// means nothing to a reader, so it is stripped.
 fn capability_label(capability: &str) -> &str {
     capability
-        .strip_prefix("translation-provider:")
+        .strip_prefix(crate::plugins::PROVIDER_CAPABILITY)
         .unwrap_or(capability)
 }
 

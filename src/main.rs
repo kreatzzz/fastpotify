@@ -33,7 +33,7 @@ struct Cli {
     demo_page: Option<String>,
 
     /// Extra demo surfaces: a comma-separated list of `queue`, `devices`,
-    /// `shortcuts`, `create`, `light`, `focus`.
+    /// `shortcuts`, `create`, `install`, `light`, `focus`.
     #[cfg(feature = "demo")]
     #[arg(long)]
     demo_show: Option<String>,
@@ -51,6 +51,11 @@ struct Cli {
     #[cfg(feature = "demo")]
     #[arg(long, value_name = "MS", default_value_t = 6000)]
     demo_shot_delay: u64,
+
+    /// A `woofer://install?plugin=…` link the OS opened with Woofer.
+    /// Forwarded to the running instance, or honoured by this launch.
+    #[arg(value_name = "URL")]
+    deep_link: Option<String>,
 }
 
 /// Remote control of the running instance, for Raycast scripts, launchers,
@@ -312,6 +317,22 @@ fn main() -> eframe::Result<()> {
     let guarded = !demo;
     #[cfg(not(feature = "demo"))]
     let guarded = true;
+
+    // A deep link landing on a second launch is forwarded to the instance
+    // already running, and this one exits. Nobody answering means this
+    // launch is the one the OS meant: fall through and honour the link.
+    // Linux has no control socket, so there a second launch can only
+    // surface the running instance; the link waits for a cold start.
+    #[cfg(not(target_os = "linux"))]
+    if guarded && let Some(url) = cli.deep_link.as_deref() {
+        let forwarded = single_instance::send(&format!("url {url}"))
+            .is_ok_and(|reply| matches!(reply, single_instance::Reply::Ok));
+        if forwarded {
+            log::info!("handed {url} to the running instance");
+            return Ok(());
+        }
+    }
+
     let instance = if guarded {
         match single_instance::acquire(&waker) {
             single_instance::Outcome::Only(guard) => Some(guard),
@@ -339,6 +360,13 @@ fn main() -> eframe::Result<()> {
     let mut app = app::App::new(&waker, dirs, settings, options);
     if let Some(guard) = &instance {
         app.set_remote_control(guard);
+    }
+    // The launch that owns the socket may itself have been handed a
+    // `woofer://` link: no instance was running, so this one is where the
+    // link is honoured. A demo run never is.
+    if guarded && let Some(url) = &cli.deep_link {
+        app.actions
+            .push(woofer::model::Action::ResolvePluginLink(url.clone()));
     }
     #[cfg(feature = "demo")]
     if demo {
@@ -736,5 +764,33 @@ fn app_icon() -> egui::IconData {
         rgba: util::app_icon_rgba(SIZE),
         width: SIZE as u32,
         height: SIZE as u32,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The OS hands a deep link over as a plain argv, right after the
+    /// program name. It must parse as the positional and never be
+    /// mistaken for a subcommand.
+    #[test]
+    fn a_woofer_link_parses_as_the_positional() {
+        // #given / #when
+        let cli = Cli::try_parse_from(["woofer", "woofer://install?plugin=translate"])
+            .expect("the link parses");
+        // #then
+        assert_eq!(
+            cli.deep_link.as_deref(),
+            Some("woofer://install?plugin=translate")
+        );
+        assert!(cli.control.is_none());
+    }
+
+    #[test]
+    fn a_launch_without_a_link_still_parses() {
+        let cli = Cli::try_parse_from(["woofer"]).expect("the bare launch parses");
+        assert!(cli.deep_link.is_none());
+        assert!(cli.control.is_none());
     }
 }

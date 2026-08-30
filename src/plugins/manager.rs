@@ -1,20 +1,22 @@
-//! Which plugins are installed, which are built in, and which one answers.
+//! Which plugins are installed, which are built in, and the order each
+//! kind asks them in.
 //!
 //! The app carries two plugins inside itself; users may add more as files.
 //! Every listing puts the installed ones first, sorted by id, then the
-//! built-ins, and marks each with whether it is switched on. Picking who
-//! answers a question is a pure lookup: the first enabled plugin claiming
-//! the capability, and behind it — never asked here — the built-in
-//! translator the panel has always had.
+//! built-ins. Picking who answers a question is no longer a single seat:
+//! each kind walks its own chain, in the order the user set, and the first
+//! provider with data wins — with the built-in engines, never asked here,
+//! standing behind the last link.
 
 use std::path::{Path, PathBuf};
 
 use crate::paths::AppDirs;
 use crate::plugins::{BUNDLED, BUNDLED_IDS, PluginManifest};
+use crate::settings::ProviderChains;
 use crate::translate::Translation;
 
 /// A plugin as the interface sees it: who it is, what it may do, and
-/// whether the user wants it answering.
+/// whether it came with the app.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Plugin {
     pub id: String,
@@ -25,12 +27,10 @@ pub struct Plugin {
     pub capabilities: Vec<String>,
     pub domains: Vec<String>,
     pub bundled: bool,
-    pub enabled: bool,
 }
 
 impl Plugin {
-    fn from_manifest(manifest: PluginManifest, bundled: bool, disabled: &[String]) -> Self {
-        let enabled = !disabled.iter().any(|id| id == &manifest.id);
+    fn from_manifest(manifest: PluginManifest, bundled: bool) -> Self {
         Self {
             id: manifest.id,
             name: manifest.name,
@@ -40,8 +40,16 @@ impl Plugin {
             capabilities: manifest.capabilities,
             domains: manifest.domains,
             bundled,
-            enabled,
         }
+    }
+
+    /// The kinds this plugin can answer for, with the `provider:` prefix
+    /// stripped: `lyrics`, `translate`, `romanize`.
+    pub fn provider_kinds(&self) -> Vec<&str> {
+        self.capabilities
+            .iter()
+            .filter_map(|capability| capability.strip_prefix(crate::plugins::PROVIDER_CAPABILITY))
+            .collect()
     }
 
     /// The manifest the host believes about this plugin — the allowlist the
@@ -65,7 +73,7 @@ impl Plugin {
 /// id, then the ones it was built with. A plugin whose manifest is missing
 /// or unreadable is skipped with a note, never a failure — one bad file
 /// must not cost the rest their page.
-pub fn list(dirs: &AppDirs, disabled: &[String]) -> Vec<Plugin> {
+pub fn list(dirs: &AppDirs) -> Vec<Plugin> {
     let dir = dirs.plugins_dir();
     let mut plugins = Vec::new();
     let mut ids: Vec<String> = std::fs::read_dir(&dir)
@@ -91,32 +99,56 @@ pub fn list(dirs: &AppDirs, disabled: &[String]) -> Vec<Plugin> {
             continue;
         };
         match PluginManifest::parse(&text) {
-            Ok(manifest) => plugins.push(Plugin::from_manifest(manifest, false, disabled)),
+            Ok(manifest) => plugins.push(Plugin::from_manifest(manifest, false)),
             Err(error) => log::warn!("the manifest of the plugin {id} is unusable: {error}"),
         }
     }
     for bundled in BUNDLED {
         match PluginManifest::parse(bundled.manifest) {
-            Ok(manifest) => plugins.push(Plugin::from_manifest(manifest, true, disabled)),
+            Ok(manifest) => plugins.push(Plugin::from_manifest(manifest, true)),
             Err(error) => log::warn!("a built-in plugin has an unusable manifest: {error}"),
         }
     }
     plugins
 }
 
-/// The first enabled plugin claiming the capability `kind` asks for —
-/// installed before built-in, and none at all when the user has disabled
-/// every claimant. Whoever it is, the host falls back to the built-in
-/// translator behind it.
-pub fn active<'a>(plugins: &'a [Plugin], kind: &str) -> Option<&'a Plugin> {
-    let wanted = PluginManifest::translation_capability(kind);
-    plugins
+/// The chain a kind asks when the user has ordered none: the bundled
+/// plugins stand in, and lyrics — whose permanent first link is the
+/// built-in flow itself — starts with no plugin at all.
+fn default_chain(kind: &str) -> Vec<String> {
+    match kind {
+        "translate" => vec!["translate".to_string()],
+        "romanize" => vec!["romanize".to_string()],
+        _ => Vec::new(),
+    }
+}
+
+/// The ids kind `kind` asks, in order: the user's chain when they have
+/// one, the bundled default when they have not.
+pub fn chain_ids(chains: &ProviderChains, kind: &str) -> Vec<String> {
+    let held = chains.for_kind(kind);
+    if held.is_empty() {
+        default_chain(kind)
+    } else {
+        held.clone()
+    }
+}
+
+/// Resolves a chain against the known plugins: each id in the order the
+/// chain names it, keeping only the plugins that claim `provider:{kind}`,
+/// and skipping ids nobody has heard of — a stale entry never stops the
+/// ones behind it.
+pub fn chain_plugins<'a>(all: &'a [Plugin], chain: &[String], kind: &str) -> Vec<&'a Plugin> {
+    let wanted = PluginManifest::provider_capability(kind);
+    chain
         .iter()
-        .find(|plugin| plugin.enabled && plugin.capabilities.contains(&wanted))
+        .filter_map(|id| all.iter().find(|plugin| &plugin.id == id))
+        .filter(|plugin| plugin.capabilities.contains(&wanted))
+        .collect()
 }
 
 /// Validates a plugin and installs it: the wasm must load, speak ABI 1,
-/// and claim a translation capability before anything is written, and it
+/// and claim a provider capability before anything is written, and it
 /// lands as `plugins/<id>.wasm` with its manifest beside it.
 ///
 /// This is the synchronous form, for tests and callers with no runtime.
@@ -126,7 +158,7 @@ pub fn install_blocking(dirs: &AppDirs, wasm: &[u8]) -> Result<Plugin, String> {
     let manifest = crate::plugins::host::validate(wasm)?;
     if BUNDLED_IDS.contains(&manifest.id.as_str()) {
         return Err(format!(
-            "the id {} belongs to a plugin built into the app; disable that one instead",
+            "the id {} belongs to a plugin built into the app",
             manifest.id
         ));
     }
@@ -148,7 +180,7 @@ pub fn install_blocking(dirs: &AppDirs, wasm: &[u8]) -> Result<Plugin, String> {
         let _ = std::fs::remove_file(dir.join(format!("{}.wasm", manifest.id)));
         return Err(format!("cannot write the manifest: {error}"));
     }
-    Ok(Plugin::from_manifest(manifest, false, &[]))
+    Ok(Plugin::from_manifest(manifest, false))
 }
 
 /// Installs a plugin, off the runtime's blocking threads: the interface
@@ -160,11 +192,12 @@ pub async fn install(dirs: &AppDirs, wasm: Vec<u8>) -> Result<Plugin, String> {
         .map_err(|error| format!("the install task died: {error}"))?
 }
 
-/// Removes an installed plugin's two files. The built-ins have no files to
-/// remove; disabling is their off switch.
+/// Removes an installed plugin's two files. Chains are the settings', so
+/// dropping the id from them is the caller's half of an uninstall; the
+/// built-ins have no files to remove.
 pub fn remove(dirs: &AppDirs, id: &str) {
     if BUNDLED_IDS.contains(&id) {
-        log::warn!("the plugin {id} is built into the app; disable it instead of removing it");
+        log::warn!("the plugin {id} is built into the app; it has no files to remove");
         return;
     }
     let dir = dirs.plugins_dir();
@@ -224,6 +257,23 @@ pub fn store_cached(
     crate::translate::store_cached(&cache_path(cache_dir, id, target, lines), found);
 }
 
+/// The cache file of a lyrics plugin's answer: a new directory beside the
+/// built-in lyrics cache, keyed by the plugin first and the track after,
+/// so one provider's answer can never be served for another's.
+pub fn lyrics_cache_path(
+    lyrics_cache_dir: &Path,
+    id: &str,
+    query: &crate::lyrics::Query,
+) -> PathBuf {
+    lyrics_cache_dir.join("lyrics_plugins").join(format!(
+        "{}.json",
+        crate::translate::cache_digest(&format!(
+            "{id}\n{}|{}|{}|{}",
+            query.artist, query.title, query.album, query.duration_ms
+        ))
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,25 +309,29 @@ mod tests {
         .unwrap();
     }
 
+    /// A listed plugin without a folder behind it, for the pure lookups.
+    fn plugin(id: &str, capability: &str) -> Plugin {
+        Plugin::from_manifest(
+            PluginManifest::parse(&manifest_text(id, capability)).unwrap(),
+            false,
+        )
+    }
+
     #[test]
     fn an_empty_folder_leaves_the_built_ins() {
         let dirs = dirs("empty");
-        let plugins = list(&dirs, &[]);
+        let plugins = list(&dirs);
         assert_eq!(plugins.len(), 2);
-        assert!(
-            plugins
-                .iter()
-                .all(|plugin| plugin.bundled && plugin.enabled)
-        );
+        assert!(plugins.iter().all(|plugin| plugin.bundled));
         let _ = std::fs::remove_dir_all(dirs.state.parent().unwrap());
     }
 
     #[test]
     fn installed_plugins_come_first_sorted_and_the_built_ins_follow() {
         let dirs = dirs("order");
-        install_manually(&dirs, "deepl", "translation-provider:translate");
-        install_manually(&dirs, "acme", "translation-provider:romanize");
-        let plugins = list(&dirs, &[]);
+        install_manually(&dirs, "deepl", "provider:translate");
+        install_manually(&dirs, "acme", "provider:romanize");
+        let plugins = list(&dirs);
         let ids: Vec<&str> = plugins.iter().map(|plugin| plugin.id.as_str()).collect();
         assert_eq!(ids, vec!["acme", "deepl", "translate", "romanize"]);
         assert!(!plugins[0].bundled);
@@ -286,32 +340,59 @@ mod tests {
     }
 
     #[test]
-    fn a_disabled_plugin_stays_listed_but_switched_off() {
-        let dirs = dirs("disabled");
-        install_manually(&dirs, "deepl", "translation-provider:translate");
-        let plugins = list(&dirs, &["deepl".to_string()]);
-        let deepl = plugins.iter().find(|plugin| plugin.id == "deepl").unwrap();
-        assert!(!deepl.enabled);
-        // With deepl off, the built-in translate plugin is who answers.
-        assert_eq!(active(&plugins, "translate").unwrap().id, "translate");
-        let _ = std::fs::remove_dir_all(dirs.state.parent().unwrap());
+    fn a_chain_resolves_in_its_own_order_and_skips_what_it_cannot_use() {
+        let deepl = plugin("deepl", "provider:translate");
+        let acme = plugin("acme", "provider:translate");
+        let lyrics = plugin("words", "provider:lyrics");
+        let all = vec![deepl, acme, lyrics];
+        let chain = chain_plugins(
+            &all,
+            &["gone".to_string(), "acme".to_string(), "deepl".to_string()],
+            "translate",
+        );
+        let ids: Vec<&str> = chain.iter().map(|plugin| plugin.id.as_str()).collect();
+        // An id nobody has heard of never stops the ones behind it, and a
+        // plugin of another kind is not for this chain.
+        assert_eq!(ids, vec!["acme", "deepl"]);
+        // The lyrics plugin only answers its own kind's call.
+        let lyrics_chain = chain_plugins(&all, &["words".to_string()], "translate");
+        assert!(lyrics_chain.is_empty());
     }
 
     #[test]
-    fn the_active_plugin_is_the_first_enabled_one_for_its_kind() {
-        let dirs = dirs("active");
-        install_manually(&dirs, "deepl", "translation-provider:translate");
-        let plugins = list(&dirs, &[]);
-        assert_eq!(active(&plugins, "translate").unwrap().id, "deepl");
-        assert_eq!(active(&plugins, "romanize").unwrap().id, "romanize");
-        // A capability nobody claims has no claimant.
-        let lyrics_only = vec![Plugin::from_manifest(
-            PluginManifest::parse(&manifest_text("x", "lyrics-provider:lines")).unwrap(),
-            false,
-            &[],
-        )];
-        assert!(active(&lyrics_only, "translate").is_none());
-        let _ = std::fs::remove_dir_all(dirs.state.parent().unwrap());
+    fn an_empty_chain_falls_to_the_bundled_defaults() {
+        let chains = ProviderChains::default();
+        assert_eq!(chain_ids(&chains, "translate"), vec!["translate"]);
+        assert_eq!(chain_ids(&chains, "romanize"), vec!["romanize"]);
+        // Lyrics starts with no plugin: the built-in flow is its first
+        // link, and no plugin asks after it until one is installed.
+        assert_eq!(chain_ids(&chains, "lyrics"), Vec::<String>::new());
+        // An ordered chain is the user's, not the default's.
+        let chains = ProviderChains {
+            translate: vec!["deepl".to_string()],
+            ..ProviderChains::default()
+        };
+        assert_eq!(chain_ids(&chains, "translate"), vec!["deepl"]);
+    }
+
+    #[test]
+    fn a_kind_of_no_claimant_resolves_to_nothing() {
+        let all = vec![plugin("deepl", "provider:translate")];
+        assert!(chain_plugins(&all, &["deepl".to_string()], "romanize").is_empty());
+    }
+
+    #[test]
+    fn a_plugin_announces_the_kinds_it_answers_for() {
+        assert_eq!(
+            plugin("deepl", "provider:translate").provider_kinds(),
+            vec!["translate"]
+        );
+        assert_eq!(
+            plugin("words", "provider:lyrics").provider_kinds(),
+            vec!["lyrics"]
+        );
+        // A capability outside the provider taxonomy is not a kind.
+        assert!(plugin("odd", "panel:sidebar").provider_kinds().is_empty());
     }
 
     #[test]
@@ -321,7 +402,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("lonely.wasm"), b"placeholder").unwrap();
         std::fs::write(dir.join("bad.json"), "not json").unwrap();
-        let plugins = list(&dirs, &[]);
+        let plugins = list(&dirs);
         assert!(plugins.iter().all(|plugin| plugin.bundled));
         let _ = std::fs::remove_dir_all(dirs.state.parent().unwrap());
     }
@@ -337,7 +418,7 @@ mod tests {
     #[test]
     fn removing_takes_both_files_and_never_touches_a_builtin() {
         let dirs = dirs("remove");
-        install_manually(&dirs, "deepl", "translation-provider:translate");
+        install_manually(&dirs, "deepl", "provider:translate");
         let dir = dirs.plugins_dir();
         // A built-in has no files, but a stray impostor must survive a
         // remove aimed at the real one.
@@ -370,6 +451,42 @@ mod tests {
         assert_eq!(
             cache_key("deepl", "en", &lines),
             cache_key("deepl", "en", &lines)
+        );
+    }
+
+    #[test]
+    fn a_lyrics_plugin_caches_beside_the_built_in_lyrics_never_among_them() {
+        let query = crate::lyrics::Query {
+            artist: "Artist".into(),
+            title: "Song".into(),
+            album: String::new(),
+            duration_ms: 201_000,
+        };
+        let cache_dir =
+            std::env::temp_dir().join(format!("woofer-lyrics-cache-{}", std::process::id()));
+        let path = lyrics_cache_path(&cache_dir, "acme", &query);
+        assert!(path.starts_with(cache_dir.join("lyrics_plugins")));
+        assert_eq!(path.extension().and_then(|ext| ext.to_str()), Some("json"));
+        // One plugin's key is another's stranger, and the track is in it.
+        let other = lyrics_cache_path(
+            &cache_dir,
+            "other",
+            &crate::lyrics::Query {
+                artist: "Artist".into(),
+                ..query.clone()
+            },
+        );
+        assert_ne!(path, other);
+        assert_ne!(
+            path,
+            lyrics_cache_path(
+                &cache_dir,
+                "acme",
+                &crate::lyrics::Query {
+                    title: "Other song".into(),
+                    ..query
+                }
+            )
         );
     }
 }

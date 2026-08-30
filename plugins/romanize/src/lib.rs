@@ -19,7 +19,7 @@ const MANIFEST: &str = r#"{
     "publisher": "kreatzzz",
     "version": "1.0.0",
     "api": 1,
-    "capabilities": ["translation-provider:romanize"],
+    "capabilities": ["provider:romanize"],
     "domains": ["clients5.google.com"],
     "homepage": "https://github.com/kreatzzz/woofer-plugin-romanize"
 }"#;

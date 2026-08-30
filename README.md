@@ -19,7 +19,9 @@ application rather than a shell plugin.
 
 ![Woofer showing a playlist, with the queue open and a track playing on a remote speaker](docs/screenshot.png)
 
-**Documentation:** [github.com/kreatzzz/woofer](https://github.com/kreatzzz/woofer/): what it is, getting started, everyday use, and how it connects to Spotify.
+**Documentation:** the guide at
+[usewoofer.com/guide](https://usewoofer.com/guide) — getting started,
+lyrics, and plugins — and in this repository under [docs/](docs/).
 
 ## What it does
 
@@ -34,8 +36,9 @@ application rather than a shell plugin.
   account. Woofer discovers those over mDNS and connects them for you,
   after which they behave like any other Spotify Connect device.
 - **Library access.** Playlists, Liked Songs, saved albums, followed
-  artists, podcasts, and saved episodes, filterable in the sidebar and as
-  full pages. Sidebar rows pin to the top and drag into your own order.
+  artists, podcasts, and saved episodes — which resume where you left
+  off — filterable in the sidebar and as full pages. Sidebar rows pin to
+  the top and drag into your own order.
 - **Search** across songs, artists, albums, playlists, podcasts, and episodes,
   with a top result and per-type views.
 - **Home** with Made for you, Recently played, your top artists and songs, and
@@ -47,6 +50,13 @@ application rather than a shell plugin.
   edited: add from any row's menu or by dragging a song onto the playlist in
   the sidebar, remove from the playlist page.
 - **Queue** as a side panel or a page; add anything to it from a row menu.
+- **Synced lyrics.** The panel follows the song line by line; click a line
+  to seek there, and scrolling by hand pauses the following until
+  **Follow** resumes it. Lyrics come from Spotify when local playback is
+  authorized, otherwise from LRCLIB. **Translate** echoes each line in
+  your language under the original and **Romanize** rewrites the line in
+  Latin letters — toggles in the panel header and in Settings → Lyrics.
+  Right-to-left lines are shaped correctly.
 - **Album-art colour.** Pages and the player bar take a tint from the cover
   of what you are looking at or listening to. Turn it off in Settings.
 - **Light and dark**, or follow the system.
@@ -76,24 +86,39 @@ application rather than a shell plugin.
   `playerctl` see Woofer like any other player. On macOS and Windows,
   `woofer next` and its siblings drive the running app from a terminal,
   a launcher, or a hotkey.
+- **Extendable with plugins.** Plugins are sandboxed WebAssembly modules
+  that compute; Woofer does every fetch and holds each one to the domains
+  its manifest declares. Translate and Romanize ship inside the app, and
+  more install from the catalog at [usewoofer.com](https://usewoofer.com).
+  See [Plugins](#plugins) below.
 
 ## Install
 
-On Arch Linux, Woofer is in the AUR:
+Installers and archives for macOS, Windows, and Linux land on the
+[releases page](https://github.com/kreatzzz/woofer/releases/latest), with
+checksums, when a version is tagged.
 
-```bash
-yay -S woofer          # the released build
-yay -S woofer-git      # built from the latest commit
-```
+The macOS build is unsigned for now, so macOS blocks the first open:
+right-click **Woofer** and choose **Open** — on recent macOS, System
+Settings → Privacy & Security → **Open Anyway** — and every later launch
+is an ordinary double-click. On Windows, SmartScreen may ask the same
+favour once: **More info → Run anyway**.
 
-On macOS, with [Homebrew](https://brew.sh):
+### Package managers
 
-```sh
-brew install --cask crmne/tap/woofer
-```
+Being published; see
+[docs/dev/release-plan.md](docs/dev/release-plan.md) for the order they
+land in. GitHub Releases is the channel that works today, once a version
+is tagged.
 
-Everywhere else it is a single binary. Build it with a stable Rust toolchain
-(1.95 or newer):
+- macOS, with [Homebrew](https://brew.sh):
+  `brew install kreatzzz/tap/woofer` *(coming soon)*
+- Arch Linux, from the AUR: `yay -S woofer` *(coming soon)*
+- Windows, with winget: `winget install kreatzzz.Woofer` *(coming soon)*
+
+### Build from source
+
+Build with a stable Rust toolchain (1.95 or newer):
 
 ```bash
 cargo install --path .
@@ -125,6 +150,28 @@ listen to, for example `noto-fonts` and `noto-fonts-cjk` (Arch) or
 installed still shows as empty boxes.
 
 A desktop entry is provided in `packaging/applications/woofer.desktop`.
+
+## Plugins
+
+A plugin is one sandboxed WebAssembly module that computes; Woofer does
+everything else — the fetching, the caching, the retries — and holds each
+plugin to the domains its manifest declares. No socket, no file, no clock
+crosses the boundary, and the app is fully functional with zero plugins
+installed.
+
+Translate and Romanize ship inside the app: the first echoes lyric lines
+in your language, the second rewrites them in Latin letters. Both are
+disable-able on the Plugins page.
+
+More plugins live in the catalog at [usewoofer.com](https://usewoofer.com).
+Press **Open in Woofer** on a card and the running app offers the install,
+or download the `.wasm` and drag it onto the Plugins page, or paste its
+address under **Install from URL**.
+
+To write your own, read [plugins/README.md](plugins/README.md) — the
+handbook — and [docs/plugins.md](docs/plugins.md) — the design. The SDK
+(`plugins/sdk`) wires the ABI and runs your module offline on the same
+interpreter the host uses.
 
 ## Sign in
 
@@ -235,8 +282,9 @@ the verbs cover more than a media key can ask for.
 Settings live in one readable JSON file (`~/.config/woofer/settings.json`
 on Linux). They include the Connect device name, bitrate, normalisation,
 autoplay, gapless playback, the audio backend (PulseAudio/PipeWire or ALSA on
-Linux), audio cache size, theme, sidebar state, whether pages take colour
-from artwork, and the mini player's skin and size.
+Linux), audio cache size, the lyrics translation and romanization options,
+theme, sidebar state, whether pages take colour from artwork, and the mini
+player's skin and size.
 Playback settings apply when you press **Apply and restart playback**.
 
 Caches (audio, artwork) live under the cache directory and can be deleted at
@@ -256,6 +304,11 @@ any time without signing you out.
   when nothing happens.
 - `src/images.rs`: album art as an egui bytes loader with a disk cache and
   time-based eviction, plus the accent-colour extraction.
+- `src/lyrics.rs`: LRCLIB fetch, match, and LRC parse behind a 30-day disk
+  cache.
+- `src/translate.rs` and `src/plugins/`: the built-in translator fallback and
+  the wasmi plugin host; the bundled Translate and Romanize modules ride
+  inside the binary.
 - `src/app.rs`, `src/model.rs`, `src/ui/`: state, navigation, and the views.
   Views collect `Action`s while drawing and the app applies them afterwards.
 - `src/mpris.rs`: Linux media controls on a dedicated thread.
@@ -284,7 +337,9 @@ and the complete local checks that every change must pass.
 
 Woofer stands on [librespot](https://github.com/librespot-org/librespot),
 [egui](https://github.com/emilk/egui), the [Inter](https://rsms.me/inter/)
-typeface (OFL), and [Lucide](https://lucide.dev) icons (ISC).
+typeface (OFL), and [Lucide](https://lucide.dev) icons (ISC). It is a fork
+of [crmne/fastpotify](https://github.com/crmne/fastpotify), and owes its
+author the ground the project covers.
 
 Woofer is an independent project and is not affiliated with Spotify.
 Spotify is a trademark of Spotify AB.

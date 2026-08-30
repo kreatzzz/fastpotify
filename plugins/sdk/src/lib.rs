@@ -29,8 +29,9 @@
 //! answers `{"requests":[{"url":…}]}`. `fulfil` receives the same input with
 //! the host's answers attached — `"responses":[{"status":200,"body":"…"}]`,
 //! in plan order, whether the host hands them over in the second buffer or
-//! folds them into the input itself — and answers either `{"error":…}` or
-//! the capability's own output shape. A handler returning `Err` lands at
+//! folds them into the input itself — and answers either `{"error":…}`,
+//! `{"miss":true}` ("I have nothing for this input"), or the capability's
+//! own output shape. A handler returning `Err` lands at
 //! the ABI as `{"error":…}`, so the host has one failure shape, not two.
 //!
 //! # Memory

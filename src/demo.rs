@@ -614,6 +614,16 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                     add_uris: vec!["spotify:track:trk1".into()],
                 })
             }
+            "install" => {
+                app.dialog = Some(Dialog::ConfirmInstall {
+                    name: "Translate".into(),
+                    publisher: "kreatzzz".into(),
+                    version: "1.0.0".into(),
+                    domains: vec!["clients5.google.com".into(), "api.lingva.ml".into()],
+                    wasm_url: "https://usewoofer.com/plugins/translate.wasm".into(),
+                    sha256: "a".repeat(64),
+                })
+            }
             "light" => {
                 app.settings.theme = crate::settings::ThemeChoice::Light;
                 app.actions.push(Action::SettingsChanged);
@@ -846,6 +856,14 @@ mod tests {
                 id: "pl1".into(),
                 name: "x".into(),
                 owned: true,
+            },
+            Dialog::ConfirmInstall {
+                name: "Translate".into(),
+                publisher: "kreatzzz".into(),
+                version: "1.0.0".into(),
+                domains: vec!["clients5.google.com".into(), "api.lingva.ml".into()],
+                wasm_url: "https://usewoofer.com/plugins/translate.wasm".into(),
+                sha256: "a".repeat(64),
             },
         ] {
             app.dialog = Some(dialog);

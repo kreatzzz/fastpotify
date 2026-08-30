@@ -108,6 +108,76 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         }
                     });
                 }
+                Dialog::ConfirmInstall {
+                    name,
+                    publisher,
+                    version,
+                    domains,
+                    ..
+                } => {
+                    let busy = app.plugin_offer_downloading();
+                    theme::text(ui, "Install plugin?", theme::bold(20.0), palette.text);
+                    ui.add_space(12.0);
+                    // The facts as quiet rows, sized to their content: the
+                    // shortcuts dialog's grid taught the lesson that
+                    // truncation makes these unusable.
+                    let cell = |ui: &mut egui::Ui, text: &str, font: egui::FontId, color| {
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(text).font(font).color(color))
+                                .extend()
+                                .selectable(false),
+                        );
+                    };
+                    egui::Grid::new("confirm-install")
+                        .num_columns(2)
+                        .spacing([24.0, 8.0])
+                        .show(ui, |ui| {
+                            cell(ui, "Name", theme::semibold(13.0), palette.text);
+                            cell(ui, &name, theme::regular(13.5), palette.secondary);
+                            ui.end_row();
+                            cell(ui, "Publisher", theme::semibold(13.0), palette.text);
+                            cell(ui, &publisher, theme::regular(13.5), palette.secondary);
+                            ui.end_row();
+                            cell(ui, "Version", theme::semibold(13.0), palette.text);
+                            cell(ui, &version, theme::regular(13.5), palette.secondary);
+                            ui.end_row();
+                            cell(ui, "Domains", theme::semibold(13.0), palette.text);
+                            cell(
+                                ui,
+                                &domains.join(", "),
+                                theme::regular(13.5),
+                                palette.secondary,
+                            );
+                            ui.end_row();
+                        });
+                    ui.add_space(8.0);
+                    // The trust contract, stated rather than implied: the
+                    // sandbox lets the plugin reach the domains listed
+                    // above and nothing else.
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(
+                                "This plugin will be able to reach only the domains listed above.",
+                            )
+                            .font(theme::regular(13.0))
+                            .color(palette.secondary),
+                        )
+                        .wrap(),
+                    );
+                    ui.add_space(20.0);
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if busy {
+                            theme::spinner(ui, 18.0, palette.accent);
+                        } else {
+                            if theme::pill_button(ui, &palette, "Install", true).clicked() {
+                                app.actions.push(Action::ConfirmPluginInstall);
+                            }
+                            if theme::pill_button(ui, &palette, "Cancel", false).clicked() {
+                                app.actions.push(Action::CancelPluginInstall);
+                            }
+                        }
+                    });
+                }
             }
         });
     if response.should_close() {

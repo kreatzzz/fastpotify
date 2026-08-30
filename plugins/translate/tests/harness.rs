@@ -1,7 +1,7 @@
 //! The test suite runs the built module the way the host will: loaded into
 //! wasmi, driven over the ABI, offline, with canned answers.
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use woofer_plugin_sdk::harness::{Plugin, Response};
 
 fn plugin() -> Plugin {
@@ -33,10 +33,7 @@ fn the_manifest_declares_what_the_host_needs() {
     assert_eq!(manifest["publisher"], "kreatzzz");
     assert_eq!(manifest["version"], "1.0.0");
     assert_eq!(manifest["api"], 1);
-    assert_eq!(
-        manifest["capabilities"],
-        json!(["translation-provider:translate"])
-    );
+    assert_eq!(manifest["capabilities"], json!(["provider:translate"]));
     assert_eq!(manifest["domains"], json!(["clients5.google.com"]));
     assert!(manifest["homepage"].is_string());
 }
@@ -48,9 +45,7 @@ fn one_request_carries_the_whole_small_song() {
     let requests = planned["requests"].as_array().unwrap();
     assert_eq!(requests.len(), 1);
     let url = requests[0]["url"].as_str().unwrap();
-    assert!(
-        url.starts_with("https://clients5.google.com/translate_a/single?client=dict-chrome-ex")
-    );
+    assert!(url.starts_with("https://clients5.google.com/translate_a/single?client=dict-chrome-ex"));
     assert!(url.contains("dt=t"), "translation is asked for");
     assert!(
         !url.contains("dt=rm"),
@@ -235,12 +230,10 @@ fn a_refused_or_unexpected_answer_is_an_error() {
     };
     let refused = plugin.fulfil(&input.to_string(), &[nonsense]).unwrap();
     let error: Value = serde_json::from_str(&refused).unwrap();
-    assert!(
-        error["error"]
-            .as_str()
-            .unwrap()
-            .contains("Google Translate")
-    );
+    assert!(error["error"]
+        .as_str()
+        .unwrap()
+        .contains("Google Translate"));
 
     // And answers that do not match the chunks are refused outright.
     let refused = plugin.fulfil(&input.to_string(), &[]).unwrap();

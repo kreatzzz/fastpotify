@@ -5,9 +5,10 @@
 //! The host [`host`] runs it inside wasmi with fuel and a memory cap, does
 //! every fetch itself, and refuses anything the manifest does not allow.
 //! [`manager`] knows which plugins are installed, which are built in, and
-//! which one answers a given question. The app starts fully functional with
+//! the order each kind asks them in. The app starts fully functional with
 //! none of them.
 
+pub mod catalog;
 pub mod host;
 pub mod manager;
 
@@ -17,9 +18,9 @@ use serde::{Deserialize, Serialize};
 /// refused at the door, not mid-run.
 pub const ABI_VERSION: i32 = 1;
 
-/// The capability prefix every translation plugin must claim, followed by
-/// the kind it answers: `translate` or `romanize`.
-pub const TRANSLATION_CAPABILITY: &str = "translation-provider:";
+/// The capability prefix every provider plugin must claim, followed by the
+/// kind it answers: `lyrics`, `translate`, or `romanize`.
+pub const PROVIDER_CAPABILITY: &str = "provider:";
 
 /// Who a plugin is, as its manifest says it. The host-side copy is the
 /// source of truth: the allowlisted domains are the ones the user saw when
@@ -64,9 +65,9 @@ impl PluginManifest {
         Ok(())
     }
 
-    /// The capability a translation plugin of `kind` must claim.
-    pub fn translation_capability(kind: &str) -> String {
-        format!("{TRANSLATION_CAPABILITY}{kind}")
+    /// The capability a provider plugin of `kind` must claim.
+    pub fn provider_capability(kind: &str) -> String {
+        format!("{PROVIDER_CAPABILITY}{kind}")
     }
 }
 
@@ -83,13 +84,13 @@ pub(crate) struct Bundled {
 /// answers instead.
 const TRANSLATE: Bundled = Bundled {
     wasm: include_bytes!("../../assets/plugins/translate.wasm"),
-    manifest: r#"{"id":"translate","name":"Translate","publisher":"kreatzzz","version":"1.0.0","api":1,"capabilities":["translation-provider:translate"],"domains":["clients5.google.com"],"homepage":"https://github.com/kreatzzz/woofer-plugin-translate"}"#,
+    manifest: r#"{"id":"translate","name":"Translate","publisher":"kreatzzz","version":"1.0.0","api":1,"capabilities":["provider:translate"],"domains":["clients5.google.com"],"homepage":"https://github.com/kreatzzz/woofer-plugin-translate"}"#,
 };
 
 /// The romanization plugin that ships with the app, alongside `translate`.
 const ROMANIZE: Bundled = Bundled {
     wasm: include_bytes!("../../assets/plugins/romanize.wasm"),
-    manifest: r#"{"id":"romanize","name":"Romanize","publisher":"kreatzzz","version":"1.0.0","api":1,"capabilities":["translation-provider:romanize"],"domains":["clients5.google.com"],"homepage":"https://github.com/kreatzzz/woofer-plugin-romanize"}"#,
+    manifest: r#"{"id":"romanize","name":"Romanize","publisher":"kreatzzz","version":"1.0.0","api":1,"capabilities":["provider:romanize"],"domains":["clients5.google.com"],"homepage":"https://github.com/kreatzzz/woofer-plugin-romanize"}"#,
 };
 /// Every plugin the app carries inside itself.
 pub(crate) const BUNDLED: &[Bundled] = &[TRANSLATE, ROMANIZE];
@@ -121,8 +122,8 @@ mod tests {
             let manifest = PluginManifest::parse(bundled.manifest).unwrap();
             let kind = match manifest.capabilities.first().map(String::as_str) {
                 Some(capability) => capability
-                    .strip_prefix(TRANSLATION_CAPABILITY)
-                    .expect("a translation capability")
+                    .strip_prefix(PROVIDER_CAPABILITY)
+                    .expect("a provider capability")
                     .to_string(),
                 None => panic!("bundled {} claims no capability", manifest.id),
             };
@@ -133,7 +134,7 @@ mod tests {
                 "en",
                 &input,
             ));
-            let translation = found.expect("the plugin answers");
+            let translation = found.expect("the plugin answers").expect("not a miss");
             let own = match kind.as_str() {
                 "translate" => &translation.translated,
                 _ => &translation.romanized,
@@ -154,8 +155,8 @@ mod tests {
             assert!(!manifest.capabilities.is_empty());
             for capability in &manifest.capabilities {
                 assert!(
-                    capability.starts_with(TRANSLATION_CAPABILITY),
-                    "a bundled translation plugin claims a translation capability"
+                    capability.starts_with(PROVIDER_CAPABILITY),
+                    "a bundled provider plugin claims a provider capability"
                 );
             }
         }
@@ -175,7 +176,7 @@ mod tests {
 
     #[test]
     fn a_manifest_is_refused_when_it_asks_for_another_api() {
-        let text = r#"{"id":"x","api":2,"capabilities":["translation-provider:translate"]}"#;
+        let text = r#"{"id":"x","api":2,"capabilities":["provider:translate"]}"#;
         let error = PluginManifest::parse(text).unwrap_err();
         assert!(error.contains("plugin API 2"));
     }
@@ -190,8 +191,12 @@ mod tests {
     #[test]
     fn a_capability_is_named_for_its_kind() {
         assert_eq!(
-            PluginManifest::translation_capability("romanize"),
-            "translation-provider:romanize"
+            PluginManifest::provider_capability("romanize"),
+            "provider:romanize"
+        );
+        assert_eq!(
+            PluginManifest::provider_capability("lyrics"),
+            "provider:lyrics"
         );
     }
 }

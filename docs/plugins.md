@@ -54,7 +54,7 @@ plus a manifest:
   "publisher": "kreatzzz",
   "version": "1.0.0",
   "api": 1,
-  "capabilities": ["translation-provider:romanize"],
+  "capabilities": ["provider:romanize"],
   "domains": ["clients5.google.com"],
   "homepage": "https://github.com/kreatzzz/woofer-plugin-romanize",
   "sha256": "…wasm digest…",
@@ -76,10 +76,10 @@ no file, and no thread.
 | Export (plugin) | Purpose |
 | --- | --- |
 | `manifest() -> json` | identity, capabilities, settings schema, domains |
-| `build_request(capability, input) -> request` | pure: decide WHAT to fetch |
-| `handle_response(capability, input, response) -> output` | pure: parse it |
-| `on_event(event) -> ()` | playback state changes (v1: now-playing only) |
-| `command_run(id, context) -> result` | a registered command fired |
+| `plan(input) -> requests` | pure: decide WHAT to fetch |
+| `fulfil(input, responses) -> output` | pure: parse the answers |
+| `on_event(event) -> ()` | playback state changes (roadmap) |
+| `command_run(id, context) -> result` | a registered command fired (roadmap) |
 
 | Host function (import) | Purpose |
 | --- | --- |
@@ -89,19 +89,121 @@ no file, and no thread.
 
 Everything else — HTTP, timing, caching policy, retries — is host work.
 
+### The one input shape
+
+Every provider kind is asked with the same object, `plan` and `fulfil`
+alike:
+
+```json
+{ "kind": "translate", "target": "en", "lines": ["…", "…"] }
+```
+
+- `kind` names the provider kind: `translate`, `romanize`, or `lyrics`.
+- `target` is the language to aid into; always `""` for lyrics.
+- `lines` carries what the kind needs. For translate and romanize it is
+  the lyric lines. For lyrics it is exactly four strings — artist, title,
+  album, and the track length in milliseconds — with `""` standing for
+  anything the app does not know:
+
+  ```json
+  { "kind": "lyrics", "target": "", "lines": ["Artist", "Song", "Album", "201000"] }
+  ```
+
+`plan` answers `{"requests":[{"url":…}, …]}`. `fulfil` receives the same
+input with the host's answers attached as
+`"responses":[{"status":200,"body":"…"}]`, in plan order.
+
+### The answer: data, miss, error
+
+`fulfil` answers one of three ways, and the host treats each differently:
+
+- **Data** — the capability's own output shape (below). The chain stops
+  here.
+- **Miss** — `{"miss":true}`: *"I have nothing for this input."* A miss is
+  not a malfunction; it is an answer, and it moves the chain to the next
+  provider exactly as data from a higher link already would.
+- **Error** — `{"error":"…"}`, or a trap, an empty fuel tank, or a missed
+  deadline: the plugin failed this call. Also moves the chain down, with a
+  note in the log.
+
+A handler returning `Err` becomes `{"error":…}` at the ABI, so the host
+has one failure shape, not two.
+
+### Output shapes, per kind
+
+**`provider:translate` / `provider:romanize`** — per-line aids, aligned
+with the input lines (short answers pad with `null`, long ones are cut):
+
+```json
+{ "translated": ["bonjour", null], "romanized": [null, null] }
+```
+
+**`provider:lyrics`** — either a miss, or `lyrics` with a `synced` flag
+and lines whose `at_ms` is a millisecond stamp (synced) or `null` (plain):
+
+```json
+{ "lyrics": { "synced": true,
+              "lines": [ { "at_ms": 12345, "text": "…" }, { "at_ms": null, "text": "…" } ] } }
+```
+
+A `synced` answer with any line missing its stamp reads as plain. An
+answer with no lines reads as a miss. Lyrics hits are cached by the host
+(30 days, keyed by plugin and track), misses included.
+
 ## 5. Capabilities
 
-- **lyrics-provider** — query (artist, title, album, duration) →
-  synced/plain lines. Multiple installed; one active.
-- **translation-provider** — (lines, target, kind: translate|romanize) →
-  per-line outputs. Multiple installed; one active per kind.
+Data capabilities are named `provider:` plus the kind, and a plugin
+claims one or more of them:
+
+- **`provider:lyrics`** — (artist, title, album, duration) → synced or
+  plain lines. Sits **behind** the built-ins: Spotify's own words and
+  LRCLIB always answer first, and the lyrics chain only fills the gaps
+  they leave.
+- **`provider:translate`** — (lines, target) → per-line words.
+- **`provider:romanize`** — (lines, target) → per-line Latin spellings.
+
+The two built-in engines — the Google `clients5` translator in the app
+and the built-in LRCLIB client — are not plugins and cannot be displaced:
+they stand permanently behind the last link of their kinds' chains.
 - **commands** — additive and namespaced (`romanize.play`); many allowed.
 - **settings** — schema-driven entries rendered by the host on the
   plugin's page. Values live in the host's settings file.
 - **storage** — namespaced KV, 50 MB quota; the plugin's cache lives
   here.
 
-## 6. Surfaces and their arities
+## 6. Chains — the arity of a provider
+
+Every provider kind is an **ordered fallback chain**. The host walks a
+kind's chain in order; the first provider that answers with data wins. A
+miss or a failure advances to the next; when the chain runs out, the
+kind's built-in engine answers — always the last resort, never asked
+inside the chain.
+
+Rules the chains obey:
+
+- **Installing appends.** A new provider takes the back of every chain it
+  can answer for. Installing never displaces a provider the user has
+  already seated.
+- **The bundled plugins are the default chain.** A kind with no ordered
+  chain falls to the bundled defaults: `translate` → the Translate
+  plugin, `romanize` → the Romanize plugin, `lyrics` → no plugin at all
+  (the built-in flow is complete on its own). The built-in engines wait
+  behind them regardless.
+- **Membership replaces enable/disable.** A provider answers only the
+  kinds whose chains name it; removing it from a chain is the off switch.
+- **Stale ids are skipped.** An id in a chain that no plugin claims — an
+  uninstalled provider, a manifest gone bad — costs its slot nothing: the
+  walk passes it and moves on.
+- **Order is the user's.** Up and down buttons on the Plugins page swap
+  adjacent links; the order persists in the settings file.
+
+The chains are one setting, stored readably:
+
+```json
+{ "provider_chains": { "lyrics": [], "translate": ["deepl", "translate"], "romanize": ["romanize"] } }
+```
+
+### Surfaces and their arities
 
 Conflicts are prevented, not resolved after the fact: every extension
 surface declares its **arity** — how many plugins may hold it, and who
@@ -109,7 +211,7 @@ breaks a tie — at API-design time.
 
 | Arity | Meaning | Ties are broken by |
 | --- | --- | --- |
-| **single-active** | One plugin holds the slot; it answers a question | The user, via an explicit picker |
+| **chain** | The kind asks each of its providers in the user's order, then the built-in | The user, via the ordering controls |
 | **multi-active** | Many plugins coexist, each in a namespaced slot | The user, for order and visibility only |
 | **merged** | Many contribute; the host merges by fixed policy | The host, deterministically (reserved; none in v1) |
 
@@ -119,9 +221,9 @@ breaks a tie — at API-design time.
 
 | Surface | Arity |
 | --- | --- |
-| Lyrics provider | single-active |
-| Translation provider (translate) | single-active |
-| Translation provider (romanize) | single-active |
+| Lyrics providers | chain, behind the built-in lyrics flow |
+| Translation providers | chain, behind the built-in translator |
+| Romanization providers | chain, behind the built-in romanizer |
 | Commands (tray, palette, control-CLI verbs) | multi-active |
 | Settings entries | additive, namespaced |
 | Storage | private |
@@ -196,13 +298,13 @@ until the catalog demands it.
 
 ## 7. Clash resolution — when plugins overlap
 
-1. **Data capabilities are single-active, user-arbitrated.** Installing a
-   second lyrics provider never silently replaces the first: the panel
-   and the Plugins page surface a picker ("Lyrics from: LRCLIB / …").
-   The first installed stays active until the user changes it.
-2. **Uninstall or disable of the active provider** falls back to the next
-   installed by install order; with none, the feature degrades to its
-   honest empty state ("No lyrics plugin active"), never an error.
+1. **Data capabilities are chained, user-ordered.** Installing a second
+   lyrics provider never displaces the first: it joins the back of the
+   chain, and the Plugins page shows the order with controls to change
+   it. The first installed keeps its seat until the user moves it.
+2. **Uninstall or removal from a chain** falls back to the next link by
+   order; with none, to the kind's built-in engine — the feature never
+   degrades to an error, at worst to its honest empty state.
 3. **Commands are additive** and auto-namespaced by plugin id, so two
    plugins registering `play` still coexist (`foo.play`, `bar.play`).
 4. **Settings and storage are namespaced** (`plugin.<id>.*`) — plugins
@@ -272,16 +374,19 @@ Layers, outermost first:
   scheme is registered by the packages already shipped (Info.plist,
   .desktop, Inno Setup) and lands through the existing single-instance
   socket into a confirmation dialog.
-- **In-app** (Settings → Plugins): list with enable/disable (instant),
-  delete (wasm + storage), visit link, version, publisher, domains;
-  "Install from file…" for sideloading; per-capability active pickers.
+- **In-app** (Plugins page): each kind's chain with up/down ordering
+  (instant, persisted), delete (wasm + its seat in every chain), visit
+  link, version, publisher, domains; "Install from file…" for
+  sideloading.
 
 ## 11. The first plugins
 
-- **Romanize** (`translation-provider:romanize`): per-line `dt=rm`
-  requests, ASCII lines skipped, identity results discarded.
-- **Translate** (`translation-provider:translate`): newline-batched
-  `dt=t`, chunked to the URL budget, source==target skip.
-- Both ship **pre-installed and disable-able**; both keep the existing
-  disk-cache discipline in plugin storage. Lyrics (LRCLIB) follows as
-  the third plugin, completing the dogfood of every v1 capability.
+- **Romanize** (`provider:romanize`): per-line `dt=rm` requests, ASCII
+  lines skipped, identity results discarded.
+- **Translate** (`provider:translate`): newline-batched `dt=t`, chunked
+  to the URL budget, source==target skip.
+- Both ship **pre-installed, at the head of their kinds' default chains**;
+  both keep the existing disk-cache discipline in plugin storage. Lyrics
+  (`provider:lyrics`) follows as the third plugin, taking the gaps the
+  built-in lyrics flow leaves, and completing the dogfood of every v1
+  capability.

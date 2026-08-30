@@ -5,6 +5,16 @@
     <key>CFBundleName</key><string>Woofer</string>
     <key>CFBundleDisplayName</key><string>Woofer</string>
     <key>CFBundleIdentifier</key><string>me.kreatzzz.woofer</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key><string>me.kreatzzz.woofer</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>woofer</string>
+            </array>
+        </dict>
+    </array>
     <key>CFBundleExecutable</key><string>woofer</string>
     <key>CFBundleIconFile</key><string>woofer</string>
     <key>CFBundlePackageType</key><string>APPL</string>

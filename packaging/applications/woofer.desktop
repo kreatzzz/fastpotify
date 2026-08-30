@@ -11,4 +11,4 @@ Keywords=spotify;music;player;streaming;
 Icon=woofer
 StartupNotify=true
 StartupWMClass=woofer
-MimeType=x-scheme-handler/spotify;
+MimeType=x-scheme-handler/spotify;x-scheme-handler/woofer;

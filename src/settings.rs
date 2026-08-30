@@ -46,6 +46,44 @@ impl ThemeChoice {
     }
 }
 
+/// The provider plugins each kind asks, in the order it asks them. A kind
+/// with an empty chain runs on the built-in engines alone; the bundled
+/// plugins stand in as the chain when one is empty.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProviderChains {
+    pub lyrics: Vec<String>,
+    pub translate: Vec<String>,
+    pub romanize: Vec<String>,
+}
+
+impl ProviderChains {
+    /// The ids of one kind, by its name.
+    pub fn for_kind(&self, kind: &str) -> &Vec<String> {
+        match kind {
+            "lyrics" => &self.lyrics,
+            "romanize" => &self.romanize,
+            _ => &self.translate,
+        }
+    }
+
+    /// The ids of one kind, mutable, by its name.
+    pub fn for_kind_mut(&mut self, kind: &str) -> &mut Vec<String> {
+        match kind {
+            "lyrics" => &mut self.lyrics,
+            "romanize" => &mut self.romanize,
+            _ => &mut self.translate,
+        }
+    }
+
+    /// Drops an id from every chain, so an uninstall leaves no ghost.
+    pub fn drop_id(&mut self, id: &str) {
+        for chain in [&mut self.lyrics, &mut self.translate, &mut self.romanize] {
+            chain.retain(|held| held != id);
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -91,9 +129,10 @@ pub struct Settings {
     pub lyrics_show_translation: bool,
     /// Rewrite lyric lines in Latin letters, to sing along.
     pub lyrics_romanize: bool,
-    /// Plugin ids the user switched off; installed or built in, they stay
-    /// quiet until switched back on.
-    pub disabled_plugins: Vec<String>,
+    /// The provider plugins each kind asks, in the order it asks them:
+    /// lyrics, translation, and romanization, each falling through its own
+    /// chain to the built-in engines behind it.
+    pub provider_chains: ProviderChains,
     /// The sidebar's own playlist order, set by dragging rows. Empty means
     /// the automatic order: the pinned block first, then recently played.
     pub sidebar_order: Vec<String>,
@@ -164,7 +203,7 @@ impl Default for Settings {
             lyrics_language: "en".to_string(),
             lyrics_show_translation: false,
             lyrics_romanize: false,
-            disabled_plugins: Vec::new(),
+            provider_chains: ProviderChains::default(),
             sidebar_order: Vec::new(),
             zoom: 1.0,
             winamp_window: false,
@@ -351,6 +390,31 @@ mod tests {
         let json = serde_json::to_string(&settings).unwrap();
         let restored: Settings = serde_json::from_str(&json).unwrap();
         assert!(!restored.sidebar_visible);
+    }
+
+    #[test]
+    fn provider_chains_round_trip_with_their_order_kept() {
+        let settings = Settings {
+            provider_chains: super::ProviderChains {
+                lyrics: vec!["acme-lyrics".into()],
+                translate: vec!["deepl".into(), "translate".into()],
+                romanize: Vec::new(),
+            },
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        let restored: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.provider_chains, settings.provider_chains);
+    }
+
+    #[test]
+    fn settings_from_before_the_chains_still_load_without_them() {
+        // Old files carried opt-outs, not opt-ins; the chains simply start
+        // empty and the built-ins stand in.
+        let settings: Settings =
+            serde_json::from_str(r#"{"disabled_plugins": ["deepl"], "zoom": 1.2}"#).unwrap();
+        assert_eq!(settings.provider_chains, super::ProviderChains::default());
+        assert_eq!(settings.zoom, 1.2);
     }
 }
 

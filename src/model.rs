@@ -463,6 +463,17 @@ pub enum Dialog {
     Shortcuts,
     /// The signed-in account is not Premium, so nothing will play.
     PremiumNeeded,
+    /// A `woofer://install` link resolved to a plugin. The facts are what
+    /// the catalog published; the domains are the trust contract, since
+    /// the host refuses the plugin any other reach.
+    ConfirmInstall {
+        name: String,
+        publisher: String,
+        version: String,
+        domains: Vec<String>,
+        wasm_url: String,
+        sha256: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -559,6 +570,14 @@ pub enum Action {
     /// Fetches a plugin's wasm from a URL and installs it. The download
     /// runs on a thread; the answer arrives as a toast.
     InstallPluginUrl(String),
+    /// A `woofer://install?plugin=…` link: resolve the slug against the
+    /// catalog on a thread, then put the offer on the table.
+    ResolvePluginLink(String),
+    /// The offer on the table is agreed to: download the wasm, verify it
+    /// against the catalog's hash, and install.
+    ConfirmPluginInstall,
+    /// The offer is declined: the dialog comes down with it.
+    CancelPluginInstall,
     OpenInSpotify(String),
     Search(String),
     SetSearchFilter(SearchFilter),

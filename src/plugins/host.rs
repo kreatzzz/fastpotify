@@ -15,7 +15,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use wasmi::{Config, Engine, Module};
 
-use crate::plugins::{ABI_VERSION, PluginManifest, TRANSLATION_CAPABILITY};
+use crate::plugins::{ABI_VERSION, PROVIDER_CAPABILITY, PluginManifest};
 use crate::translate::Translation;
 
 /// The compute a plugin run may burn, in wasmi fuel: enough for tens of
@@ -109,42 +109,94 @@ fn machine(module: &Module) -> Result<Machine, String> {
     Ok(Machine { store, instance })
 }
 
-/// Runs a translation plugin over the lines: the plugin plans its
-/// requests, the host fetches them itself, and the plugin reads them
-/// back. Returns the host's error when the plugin traps, runs out of
-/// fuel, misses its deadlines, or asks for a domain it does not have.
+/// Runs a provider plugin over the lines: the plugin plans its requests,
+/// the host fetches them itself, and the plugin reads them back. `Ok(None)`
+/// is the miss the ABI defines — the plugin has nothing for this input —
+/// and the host's error is everything else: a trap, an empty fuel tank, a
+/// missed deadline, or a URL the manifest does not allow.
 pub async fn run_translation(
     wasm: &[u8],
     manifest: &PluginManifest,
     kind: &str,
     target: &str,
     lines: &[&str],
-) -> Result<Translation, String> {
+) -> Result<Option<Translation>, String> {
     let wasm = wasm.to_vec();
     let manifest = manifest.clone();
     let kind = kind.to_string();
     let target = target.to_string();
     let lines: Vec<String> = lines.iter().map(|line| line.to_string()).collect();
-    let run =
-        tokio::task::spawn_blocking(move || run_blocking(&wasm, &manifest, &kind, &target, &lines));
-    match tokio::time::timeout(RUN_DEADLINE, run).await {
+    off_thread(move || {
+        let input = serde_json::json!({ "kind": kind, "target": target, "lines": lines });
+        let output = run_provider(&wasm, &manifest, &kind, &input)?;
+        into_translation(output, input["lines"].as_array().map_or(0, Vec::len))
+    })
+    .await
+}
+
+/// The track a lyrics provider is asked about: artist, title, album, and
+/// the length in milliseconds, `0` when nobody knows it.
+pub async fn run_lyrics(
+    wasm: &[u8],
+    manifest: &PluginManifest,
+    query: &crate::lyrics::Query,
+) -> Result<Option<crate::lyrics::Lyrics>, String> {
+    let wasm = wasm.to_vec();
+    let manifest = manifest.clone();
+    let input = lyrics_input(query);
+    off_thread(move || {
+        let output = run_provider(&wasm, &manifest, "lyrics", &input)?;
+        into_lyrics(output)
+    })
+    .await
+}
+
+/// The one input shape every provider kind is asked with: `lines` carries
+/// what the kind needs, and for lyrics that is artist, title, album, and
+/// the duration in milliseconds, as strings — `""` for what is not known.
+/// `target` is the language to aid into, always empty for lyrics.
+pub(crate) fn lyrics_input(query: &crate::lyrics::Query) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "lyrics",
+        "target": "",
+        "lines": [
+            query.artist,
+            query.title,
+            query.album,
+            if query.duration_ms > 0 {
+                query.duration_ms.to_string()
+            } else {
+                String::new()
+            }
+        ]
+    })
+}
+
+/// Takes a blocking run off the runtime's worker threads, under the one
+/// wall-clock deadline a whole run — fuel and fetches included — may take.
+async fn off_thread<T: Send + 'static>(
+    run: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    match tokio::time::timeout(RUN_DEADLINE, tokio::task::spawn_blocking(run)).await {
         Ok(Ok(answer)) => answer,
         Ok(Err(error)) => Err(format!("the plugin task died: {error}")),
         Err(_) => Err("the plugin missed its deadline".to_string()),
     }
 }
 
-fn run_blocking(
+/// The shared spine of every provider run: prove what the module claims,
+/// let it plan, fetch what it asked for, and let it read the answers back.
+/// The output is the plugin's own JSON, whatever shape its kind speaks.
+fn run_provider(
     wasm: &[u8],
     manifest: &PluginManifest,
     kind: &str,
-    target: &str,
-    lines: &[String],
-) -> Result<Translation, String> {
+    input: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
     let module = module(wasm, &manifest.id)?;
     let mut machine = machine(&module)?;
     let declared = declared_manifest(&mut machine)?;
-    let capability = PluginManifest::translation_capability(kind);
+    let capability = PluginManifest::provider_capability(kind);
     if !declared
         .capabilities
         .iter()
@@ -152,8 +204,7 @@ fn run_blocking(
     {
         return Err(format!("the plugin claims no {capability} capability"));
     }
-    let input = serde_json::json!({ "kind": kind, "target": target, "lines": lines });
-    let planned: Plan = serde_json::from_value(call_json(&mut machine, "plan", &input, None)?)
+    let planned: Plan = serde_json::from_value(call_json(&mut machine, "plan", input, None)?)
         .map_err(|error| format!("the plugin's plan is not the JSON the ABI wants: {error}"))?;
     let urls: Vec<String> = planned
         .requests
@@ -169,8 +220,7 @@ fn run_blocking(
         .map(|url| fetch_one(url, &what))
         .collect::<Result<Vec<_>, String>>()?;
     let answers = serde_json::json!({ "responses": responses });
-    let output = call_json(&mut machine, "fulfil", &input, Some(&answers))?;
-    into_translation(output, lines.len())
+    call_json(&mut machine, "fulfil", input, Some(&answers))
 }
 
 /// Loads a plugin far enough to hear what it is: the ABI version and the
@@ -185,9 +235,9 @@ pub fn validate(wasm: &[u8]) -> Result<PluginManifest, String> {
     if !declared
         .capabilities
         .iter()
-        .any(|claimed| claimed.starts_with(TRANSLATION_CAPABILITY))
+        .any(|claimed| claimed.starts_with(PROVIDER_CAPABILITY))
     {
-        return Err("the plugin claims no translation capability".to_string());
+        return Err("the plugin claims no provider capability".to_string());
     }
     Ok(declared)
 }
@@ -459,19 +509,73 @@ fn fetch_one(url: &str, what: &str) -> Result<PluginResponse, String> {
 }
 
 /// The plugin's fulfil answer becomes per-line aids, aligned with the
-/// song: a short answer pads with `None`, a long one is cut, and an
-/// `{"error": …}` is the failure it says it is.
-fn into_translation(output: serde_json::Value, count: usize) -> Result<Translation, String> {
+/// song: a short answer pads with `None`, a long one is cut, an
+/// `{"error": …}` is the failure it says it is, and a `{"miss": true}` is
+/// the quiet "nothing for this input" the chain walks past.
+fn into_translation(
+    output: serde_json::Value,
+    count: usize,
+) -> Result<Option<Translation>, String> {
     if let Some(error) = output.get("error") {
         let message = error.as_str().unwrap_or("unknown error");
         return Err(format!("the plugin failed: {message}"));
     }
+    if is_miss(&output) {
+        return Ok(None);
+    }
     let output: PluginOutput = serde_json::from_value(output)
         .map_err(|error| format!("the plugin's answer is not the JSON the ABI wants: {error}"))?;
-    Ok(Translation {
+    Ok(Some(Translation {
         romanized: aligned(output.romanized, count),
         translated: aligned(output.translated, count),
-    })
+    }))
+}
+
+/// Whether the plugin answered the miss the ABI defines: a literal
+/// `"miss": true`, "I have nothing for this input" — distinct from an
+/// error, which means the plugin is broken, not empty.
+fn is_miss(output: &serde_json::Value) -> bool {
+    output
+        .get("miss")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// The plugin's fulfil answer becomes lyrics for the track, or a miss when
+/// it has none. An answer whose lines came back empty is a miss too: the
+/// panel has nothing to draw from it, and the chain has somewhere to go.
+fn into_lyrics(output: serde_json::Value) -> Result<Option<crate::lyrics::Lyrics>, String> {
+    if let Some(error) = output.get("error") {
+        let message = error.as_str().unwrap_or("unknown error");
+        return Err(format!("the plugin failed: {message}"));
+    }
+    if is_miss(&output) {
+        return Ok(None);
+    }
+    let output: LyricsOutput = serde_json::from_value(output)
+        .map_err(|error| format!("the plugin's answer is not the JSON the ABI wants: {error}"))?;
+    let Some(found) = output.lyrics else {
+        return Err("the plugin's answer carries no lyrics".to_string());
+    };
+    let lines: Vec<crate::lyrics::Line> = found
+        .lines
+        .into_iter()
+        .map(|line| crate::lyrics::Line {
+            at_ms: line.at_ms,
+            text: line.text,
+        })
+        .collect();
+    if lines.is_empty() {
+        return Ok(None);
+    }
+    // A synced answer with a line missing its stamp is not one the panel
+    // can follow, so it reads as plain.
+    let synced = found.synced && lines.iter().all(|line| line.at_ms.is_some());
+    Ok(Some(crate::lyrics::Lyrics {
+        lines,
+        synced,
+        instrumental: false,
+    }))
 }
 
 fn aligned(mut lines: Vec<Option<String>>, count: usize) -> Vec<Option<String>> {
@@ -502,6 +606,25 @@ struct PluginOutput {
     romanized: Vec<Option<String>>,
     #[serde(default)]
     translated: Vec<Option<String>>,
+}
+
+#[derive(Deserialize)]
+struct LyricsOutput {
+    lyrics: Option<PluginLyrics>,
+}
+
+#[derive(Deserialize)]
+struct PluginLyrics {
+    #[serde(default)]
+    synced: bool,
+    #[serde(default)]
+    lines: Vec<PluginLine>,
+}
+
+#[derive(Deserialize)]
+struct PluginLine {
+    at_ms: Option<u32>,
+    text: String,
 }
 
 #[cfg(test)]
@@ -559,7 +682,8 @@ mod tests {
             json!({"romanized": ["konnichiwa", null], "translated": ["hello", "world", "extra"]}),
             3,
         )
-        .unwrap();
+        .unwrap()
+        .expect("an ordinary answer is data");
         assert_eq!(
             found.romanized,
             vec![Some("konnichiwa".to_string()), None, None]
@@ -573,7 +697,9 @@ mod tests {
             ]
         );
         // And a song shorter than the answer cuts the tail off.
-        let cut = into_translation(json!({"translated": ["hello", "world"]}), 1).unwrap();
+        let cut = into_translation(json!({"translated": ["hello", "world"]}), 1)
+            .unwrap()
+            .unwrap();
         assert_eq!(cut.translated, vec![Some("hello".to_string())]);
     }
 
@@ -582,9 +708,77 @@ mod tests {
         let error = into_translation(json!({"error": "the upstream refused"}), 2).unwrap_err();
         assert!(error.contains("the upstream refused"), "{error}");
         // Missing fields mean every line keeps the original.
-        let found = into_translation(json!({}), 2).unwrap();
+        let found = into_translation(json!({}), 2).unwrap().unwrap();
         assert_eq!(found.romanized, vec![None, None]);
         assert_eq!(found.translated, vec![None, None]);
+    }
+
+    #[test]
+    fn a_miss_is_no_data_not_a_failure() {
+        assert_eq!(into_translation(json!({"miss": true}), 2).unwrap(), None);
+        // Only the literal true reads as a miss; anything else the shape
+        // parser judges.
+        let found = into_translation(json!({"miss": false}), 2)
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.translated, vec![None, None]);
+    }
+
+    #[test]
+    fn a_lyrics_answer_maps_into_the_panels_lyrics() {
+        let found = into_lyrics(json!({
+            "lyrics": {"synced": true, "lines": [
+                {"at_ms": 12345, "text": "first"},
+                {"at_ms": 67890, "text": "second"},
+            ]}
+        }))
+        .unwrap()
+        .expect("a full answer is lyrics");
+        assert!(found.synced);
+        assert_eq!(found.lines[0].at_ms, Some(12_345));
+        assert_eq!(found.lines[1].text, "second");
+    }
+
+    #[test]
+    fn a_lyrics_answer_that_cannot_be_followed_reads_as_plain_or_a_miss() {
+        // A synced flag with unstamped lines is honest only as plain.
+        let plain = into_lyrics(json!({
+            "lyrics": {"synced": true, "lines": [{"at_ms": null, "text": "a"}]}
+        }))
+        .unwrap()
+        .unwrap();
+        assert!(!plain.synced);
+        // No lines at all is a miss in a shape, and the chain walks past it.
+        assert_eq!(
+            into_lyrics(json!({"lyrics": {"synced": true, "lines": []}})).unwrap(),
+            None
+        );
+        assert_eq!(into_lyrics(json!({"miss": true})).unwrap(), None);
+        let error = into_lyrics(json!({"error": "no such track"})).unwrap_err();
+        assert!(error.contains("no such track"), "{error}");
+    }
+
+    #[test]
+    fn the_lyrics_input_names_the_track_in_strings() {
+        let query = crate::lyrics::Query {
+            artist: "Artist".into(),
+            title: "Song".into(),
+            album: String::new(),
+            duration_ms: 201_000,
+        };
+        let input = lyrics_input(&query);
+        assert_eq!(input["kind"], "lyrics");
+        assert_eq!(input["target"], "");
+        assert_eq!(
+            input["lines"],
+            json!(["Artist", "Song", "", "201000"]),
+            "artist, title, album, duration — the unknowns as empty strings"
+        );
+        let unknown = lyrics_input(&crate::lyrics::Query {
+            duration_ms: 0,
+            ..query
+        });
+        assert_eq!(unknown["lines"][3], "");
     }
 
     #[tokio::test]

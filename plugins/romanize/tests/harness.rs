@@ -1,7 +1,7 @@
 //! The test suite runs the built module the way the host will: loaded into
 //! wasmi, driven over the ABI, offline, with canned answers.
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use woofer_plugin_sdk::harness::{Plugin, Response};
 
 fn plugin() -> Plugin {
@@ -33,10 +33,7 @@ fn the_manifest_declares_what_the_host_needs() {
     assert_eq!(manifest["publisher"], "kreatzzz");
     assert_eq!(manifest["version"], "1.0.0");
     assert_eq!(manifest["api"], 1);
-    assert_eq!(
-        manifest["capabilities"],
-        json!(["translation-provider:romanize"])
-    );
+    assert_eq!(manifest["capabilities"], json!(["provider:romanize"]));
     assert_eq!(manifest["domains"], json!(["clients5.google.com"]));
     assert!(manifest["homepage"].is_string());
 }

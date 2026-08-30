@@ -1,6 +1,6 @@
 //! The ABI, written once so no plugin writes it twice.
 
-use std::alloc::{Layout, alloc as global_alloc, dealloc as global_dealloc};
+use std::alloc::{alloc as global_alloc, dealloc as global_dealloc, Layout};
 
 use serde_json::json;
 

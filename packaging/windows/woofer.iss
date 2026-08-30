@@ -78,5 +78,13 @@ Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 
+; The `woofer://install?plugin=…` deep links the marketplace hands out.
+; Registered under HKCU, like everything else this installer touches, so
+; the uninstaller can take it back.
+[Registry]
+Root: HKCU; Subkey: "Software\Classes\woofer"; ValueType: string; ValueName: ""; ValueData: "URL:Woofer Protocol"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\woofer"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
+Root: HKCU; Subkey: "Software\Classes\woofer\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}"" ""%1"""
+
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent

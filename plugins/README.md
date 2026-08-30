@@ -7,8 +7,8 @@ handbook for writing one.
 
     plugins/
       sdk/         woofer-plugin-sdk — the ABI, once, and the test harness
-      translate/   translation-provider:translate
-      romanize/    translation-provider:romanize
+      translate/   provider:translate
+      romanize/    provider:romanize
 
 Every crate is standalone (an empty `[workspace]` table of its own), builds
 its own module, and tests it on the same interpreter the host runs
@@ -22,9 +22,10 @@ Version 1: no imports, JSON everywhere, strings packed into one `i64` as
 `{"kind":…,"target":…,"lines":[…]}` and answers `{"requests":[{"url":…}]}`.
 `fulfil` gets the same input with the host's answers attached —
 `"responses":[{"status":200,"body":"…"}]`, in plan order — and answers
-either `{"error":…}` or the capability's own output. A handler's `Err`
-becomes `{"error":…}` at the ABI, so the host has one failure shape, not
-two.
+`{"error":…}`, `{"miss":true}` ("I have nothing for this input"), or the
+capability's own output. A handler's `Err` becomes `{"error":…}` at the
+ABI, so the host has one failure shape, not two. Each kind asks its
+providers in the user's order, and the first with data wins.
 
 ## Writing one
 
@@ -48,7 +49,7 @@ const MANIFEST: &str = r#"{
     "publisher": "kreatzzz",
     "version": "1.0.0",
     "api": 1,
-    "capabilities": ["translation-provider:translate"],
+    "capabilities": ["provider:translate"],
     "domains": ["example.com"],
     "homepage": "https://github.com/kreatzzz/woofer-plugin-my-plugin"
 }"#;
