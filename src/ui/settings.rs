@@ -18,9 +18,9 @@ fn section(
     title: &str,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
+    ui.add_space(16.0);
+    theme::text(ui, title, theme::bold(17.0), palette.text);
     ui.add_space(10.0);
-    theme::text(ui, title, theme::bold(18.0), palette.text);
-    ui.add_space(8.0);
     Frame::new()
         .fill(
             palette
@@ -34,7 +34,7 @@ fn section(
             ui.set_min_width(ui.available_width());
             add_contents(ui);
         });
-    ui.add_space(8.0);
+    ui.add_space(12.0);
 }
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
