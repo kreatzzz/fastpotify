@@ -8,7 +8,7 @@
 use std::{fmt, path::PathBuf, process::Command};
 
 use serde_json::json;
-use wasmi::{Engine, Instance, Linker, Memory, Module, Store, TypedFunc};
+use wasmi::{Engine, Linker, Memory, Module, Store, TypedFunc};
 
 use crate::ABI_VERSION;
 
@@ -160,11 +160,16 @@ impl Plugin {
 
     /// Hands bytes to the plugin: asks for room, then writes.
     fn give(&mut self, bytes: &[u8]) -> Result<(i32, i32), HarnessError> {
+        if bytes.len() > i32::MAX as usize {
+            return Err(HarnessError(
+                "the plugin argument is too large for the ABI".into(),
+            ));
+        }
         let ptr = self
             .alloc_fn
             .call(&mut self.store, bytes.len() as i32)
             .map_err(|error| HarnessError(format!("the plugin's `alloc` failed: {error}")))?;
-        if ptr == 0 {
+        if ptr <= 0 {
             return Err(HarnessError(
                 "the plugin refused to make room for an argument".into(),
             ));
@@ -184,8 +189,19 @@ impl Plugin {
                 "the plugin returned nothing: its memory ran out".into(),
             ));
         }
-        let ptr = (packed as u64 >> 32) as u32 as usize;
+        let ptr = (packed as u64 >> 32) as u32;
+        if ptr == 0 || ptr > i32::MAX as u32 {
+            return Err(HarnessError(
+                "the plugin returned an invalid answer pointer".into(),
+            ));
+        }
+        let ptr = ptr as usize;
         let len = (packed as u64 & 0xFFFF_FFFF) as usize;
+        if len > i32::MAX as usize {
+            return Err(HarnessError(
+                "the plugin returned an answer too large for the ABI".into(),
+            ));
+        }
         if len == 0 {
             return Ok(String::new());
         }

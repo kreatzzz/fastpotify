@@ -1,9 +1,15 @@
+---
+title: Plugins
+description: How Woofer's reviewed WebAssembly plugins extend lyrics, translation, and romanization without taking over the app.
+---
+
 # Woofer Plugin System — Design
 
-Status: v1 shipped — the wasmi host, the SDK, and the first two plugins,
-Translate and Romanize, published on the catalog at
-[usewoofer.com](https://usewoofer.com). The app bundles nothing: the
-built-in engines answer until a plugin is installed. Runtime: wasmi
+Status: v1 shipped — the wasmi host, the SDK, and the first two plugin
+artifacts, Translate and Romanize, are published in the catalog repository.
+The public catalog site is planned at [usewoofer.com](https://usewoofer.com);
+its deployment is still pending. The app bundles nothing: the built-in
+engines answer until a plugin is installed. Runtime: wasmi
 (wasm32-unknown-unknown), pure compute, no imports.
 
 ## 1. Goals and non-goals
@@ -33,7 +39,7 @@ built-in engines answer until a plugin is installed. Runtime: wasmi
 │  ┌──────────────────────┐   ┌────────────────────────────────────────────────┐ │
 │  │ Capability registry  │   │ Plugin host (wasmi)                              │ │
 │  │ lyrics / translation │◄──┤ instantiate · call · fuel · memory cap · timeouts│ │
-│  │ romanize / commands  │   └───────────────┬────────────────────────────────┘ │
+│  │ romanization         │   └───────────────┬────────────────────────────────┘ │
 │  └──────────┬───────────┘                   │ two-step request pattern         │
 │             │                        ┌──────▼───────┐                          │
 │  ┌──────────▼───────────┐            │  plugin.wasm │  pure compute, no I/O    │
@@ -57,36 +63,43 @@ plus a manifest:
   "api": 1,
   "capabilities": ["provider:romanize"],
   "domains": ["clients5.google.com"],
-  "homepage": "https://github.com/kreatzzz/woofer-plugin-romanize",
-  "sha256": "…wasm digest…",
-  "license": "MIT"
+  "homepage": "https://github.com/kreatzzz/woofer-plugin-romanize"
 }
 ```
 
 - `api` gates loading: the host refuses plugins newer than itself.
 - `domains` is enforced by the host's HTTP executor — the plugin can
   *ask*, the host decides.
-- `sha256` is pinned at install time and re-verified on every launch.
+- The catalog entry pins the downloaded module's `sha256`; new installed
+  sidecars retain that digest and the host re-verifies it before execution.
+  Catalog-only fields such as the digest and license are not module-manifest
+  fields.
 
 ## 4. Host API v1
 
-Wire format is JSON over a flat ABI. The plugin exports these functions
-and imports only the host functions listed; it has no clock, no socket,
-no file, and no thread.
+Wire format is JSON over a flat ABI. A v1 module imports nothing: it has no
+clock, socket, file, thread, storage, settings, or logging access. The host
+performs every HTTP request described by `plan` and passes the responses to
+`fulfil`.
 
 | Export (plugin) | Purpose |
 | --- | --- |
-| `manifest() -> json` | identity, capabilities, settings schema, domains |
+| `memory` | linear memory used by the packed-string ABI |
+| `alloc(size) / dealloc(ptr, size)` | transfer-buffer ownership |
+| `abi_version() -> i32` | exact ABI compatibility gate |
+| `manifest() -> json` | identity, provider capabilities, domains |
 | `plan(input) -> requests` | pure: decide WHAT to fetch |
 | `fulfil(input, responses) -> output` | pure: parse the answers |
-| `on_event(event) -> ()` | playback state changes (roadmap) |
-| `command_run(id, context) -> result` | a registered command fired (roadmap) |
 
-| Host function (import) | Purpose |
+The following surfaces are roadmap work, not imports available to ABI v1:
+
+| Planned host surface | Purpose |
 | --- | --- |
 | `storage_get / storage_put` | per-plugin namespaced KV, quota-capped |
 | `log(level, message)` | lands in the app log under the plugin's name |
 | `settings_get` | the values the user set for this plugin |
+| `on_event(event)` | playback state changes |
+| `command_run(id, context)` | a registered command fired |
 
 Everything else — HTTP, timing, caching policy, retries — is host work.
 
@@ -166,11 +179,10 @@ claims one or more of them:
 The two built-in engines — the Google `clients5` translator in the app
 and the built-in LRCLIB client — are not plugins and cannot be displaced:
 they stand permanently behind the last link of their kinds' chains.
-- **commands** — additive and namespaced (`romanize.play`); many allowed.
-- **settings** — schema-driven entries rendered by the host on the
-  plugin's page. Values live in the host's settings file.
-- **storage** — namespaced KV, 50 MB quota; the plugin's cache lives
-  here.
+
+Commands, schema-driven settings, and quota-capped storage are planned
+additive capabilities; the current host accepts only the three `provider:`
+kinds above.
 
 ## 6. Chains — the arity of a provider
 
@@ -216,21 +228,21 @@ breaks a tie — at API-design time.
 
 ### The catalog, by version
 
-**v1 — data and control**
+**v1 — data providers (shipped)**
 
 | Surface | Arity |
 | --- | --- |
 | Lyrics providers | chain, behind the built-in lyrics flow |
 | Translation providers | chain, behind the built-in translator |
 | Romanization providers | chain, behind the built-in romanizer |
-| Commands (tray, palette, control-CLI verbs) | multi-active |
-| Settings entries | additive, namespaced |
-| Storage | private |
 
-**v1.5 — UI surfaces and events**
+**v1.5 — control, state, UI surfaces, and events (roadmap)**
 
 | Surface | Arity |
 | --- | --- |
+| Commands (tray, palette, control-CLI verbs) | multi-active |
+| Settings entries | additive, namespaced |
+| Storage | private |
 | Sidebar panels | multi-active, stacked |
 | Track context-menu items | multi-active |
 | Player-bar extras | multi-active, fixed-size slots |
@@ -304,25 +316,24 @@ until the catalog demands it.
 2. **Uninstall or removal from a chain** falls back to the next link by
    order; with none, to the kind's built-in engine — the feature never
    degrades to an error, at worst to its honest empty state.
-3. **Commands are additive** and auto-namespaced by plugin id, so two
-   plugins registering `play` still coexist (`foo.play`, `bar.play`).
-4. **Settings and storage are namespaced** (`plugin.<id>.*`) — plugins
-   cannot read or write each other's data, so they cannot clash there.
+3. **Commands (roadmap) are additive** and will be auto-namespaced by plugin
+   id, so two plugins registering `play` can coexist (`foo.play`, `bar.play`).
+4. **Settings and storage (roadmap) are namespaced** (`plugin.<id>.*`) so
+   plugins will not be able to read or write each other's data.
 5. **Domains are additive** and per-plugin; overlaps are harmless.
 6. Determinism rule: *the user is the only arbiter; the host never
    resolves clashes silently.*
 
 ## 8. Degree of change — what a plugin may and may not do
 
-**May (v1)** — contribute data (lyrics, translations, romanization),
-register commands, contribute schema-driven settings, use its own
-storage, ask the host for domain-scoped HTTP, log.
+**May (v1)** — contribute data (lyrics, translations, romanization) and ask
+the host for domain-scoped HTTP through the pure `plan` / `fulfil` exchange.
 
-**May (roadmap, additive)** — `panel`: schema-driven sidebar widget
-trees (text, lists, avatars, buttons) fed by polling and `on_event`;
-`websocket relay`: host-owned sockets streaming events into
-`handle_event`; `secrets`: host-managed tokens for a plugin's own
-service.
+**May (roadmap, additive)** — register commands, contribute schema-driven
+settings, use namespaced storage and logging; `panel`: schema-driven sidebar
+widget trees (text, lists, avatars, buttons) fed by polling and `on_event`;
+`websocket relay`: host-owned sockets streaming events into `handle_event`;
+`secrets`: host-managed tokens for a plugin's own service.
 
 **May never** — draw UI directly or replace core views; touch the
 playback engine or the Spotify session; access the filesystem or the
@@ -339,22 +350,25 @@ Layers, outermost first:
 
 1. **Sandbox**: wasmi isolation — no syscalls, no shared memory. A
    plugin trap is contained by construction.
-2. **Resources**: 64 MB linear memory cap, fuel metering per call, a 2 s
-   wall-clock deadline per call, a 5 MB response-size cap on host
-   fetches, a 50 MB storage quota. A runaway plugin is slowed, capped,
-   then killed — never the app.
+2. **Resources**: 64 MB linear memory cap, fuel metering per call, a 10 s
+   wall-clock deadline per call, at most five host fetches running together,
+   and a 5 MB response-size cap. A runaway plugin is slowed, capped, then
+   killed — never the app.
 3. **Error domains**: every plugin call returns a Result at the ABI.
    Trap, timeout, `Err`, or OOM is the same thing to the host: *this
    plugin failed this call*.
-4. **Degradation ladder**: one failed call → that capability quietly
-   falls back (next provider, or the honest empty state). Three
-   consecutive failures → the plugin is auto-disabled with a toast and
-   marked "crashed" on its Plugins page; the user can re-enable. This
-   mirrors the app's existing `Loadable::Failed` pattern.
-5. **Startup**: instantiation is lazy — a bad plugin cannot slow or
-   break launch; the app starts, and plugins come up when first needed.
-6. **Updates**: a plugin update re-verifies sha256; the previous wasm is
-   kept for one version so an update can roll back.
+4. **Degradation ladder**: one failed call → quiet fallback to the next
+   provider (or the honest empty state). Three consecutive failures disable
+   that module for the current session, surface a visible status and toast,
+   and leave the rest of the chain running. A successful call resets the
+   streak; replacing the module starts it fresh.
+5. **Startup**: the plugin list reads cached, integrity-pinned manifest
+   metadata without instantiating Wasm on the UI thread. The reusable wasmi
+   module is compiled on its first provider call, and install/remove updates
+   invalidate the metadata cache.
+6. **Updates (roadmap)**: every installed wasm is sha256-verified, but the
+   current installer does not retain a previous module for automatic rollback.
+   Keeping one prior version is the planned update contract.
 7. **Catalog**: approval-only merges, manifest schema CI, a source link
    required, sha256 pinned — by the time a plugin reaches users it has
    been read once by a human.
@@ -365,14 +379,15 @@ Layers, outermost first:
   plugin.wasm, icon, README}`. Approval = reviewed PR merge; CI
   validates the schema, the digests, and the api version, and
   regenerates `registry.json`.
-- **Website**: static, generated by CI, hosted on Vercel at
-  [usewoofer.com](https://usewoofer.com). Catalog page + per-plugin
-  pages: description, publisher, version, declared domains, install,
-  source. "Open in
-  Woofer" uses the `woofer://install?plugin=&v=&sig=` deep link; the
-  scheme is registered by the packages already shipped (Info.plist,
-  .desktop, Inno Setup) and lands through the existing single-instance
-  socket into a confirmation dialog.
+- **Website (planned)**: a static catalog generated by CI, with deployment to
+  Vercel and the [usewoofer.com](https://usewoofer.com) domain still pending.
+  Catalog page + per-plugin pages will carry description, publisher, version,
+  declared domains, install, and source. The current parser accepts only the
+  reviewed `woofer://install?plugin=<slug>` shape; version/signature query
+  fields are reserved for a future signed-link contract. The scheme is
+  registered by the packages already shipped (Info.plist, `.desktop`, Inno
+  Setup) and lands through the existing single-instance socket into a
+  confirmation dialog.
 - **In-app** (Plugins page): each kind's chain with up/down ordering
   (instant, persisted), delete (wasm + its seat in every chain), visit
   link, version, publisher, domains; "Install from file…" for
@@ -384,10 +399,9 @@ Layers, outermost first:
   lines skipped, identity results discarded.
 - **Translate** (`provider:translate`): newline-batched `dt=t`, chunked
   to the URL budget, source==target skip.
-- Both are **published on the catalog**, installed separately from it
+- Both are **published in the catalog repository**, installed separately from it
   (`woofer://install?plugin=translate` and `…plugin=romanize`); the
   built-in engines answer until then and whenever they are absent;
-  both keep the existing disk-cache discipline in plugin storage. Lyrics
-  (`provider:lyrics`) follows as the third plugin, taking the gaps the
-  built-in lyrics flow leaves, and completing the dogfood of every v1
-  capability.
+  both use the host's existing digest-aware translation cache. A catalog
+  lyrics plugin (`provider:lyrics`) remains roadmap work; the host-side chain
+  already accepts one in the gaps left by the built-in lyrics flow.

@@ -1,115 +1,332 @@
 name: Release
 
 on:
+  # A tag builds and verifies assets, but does not publish them. Publishing is
+  # an explicit, second run from the tag with `publish` checked below.
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the verified assets as a GitHub release
+        required: false
+        default: false
+        type: boolean
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    name: build (${{ matrix.target }})
+  prepare:
+    name: validate release ref
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      prerelease: ${{ steps.metadata.outputs.prerelease }}
+      can_publish: ${{ steps.metadata.outputs.can_publish }}
+      source_date_epoch: ${{ steps.metadata.outputs.source_date_epoch }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - id: metadata
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          PUBLISH_REQUESTED: ${{ inputs.publish || false }}
+        run: |
+          set -euo pipefail
+          cargo_version="$(awk '
+            $0 == "[package]" { in_package = 1; next }
+            in_package && /^\[/ { exit }
+            in_package && $1 == "version" { gsub(/"/, "", $3); print $3; exit }
+          ' Cargo.toml)"
+          [[ "$cargo_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "Cargo.toml has no plain package version" >&2
+            exit 1
+          }
+
+          if [[ "$REF_TYPE" == tag ]]; then
+            [[ "$REF_NAME" == v* ]] || {
+              echo "release tags must start with v: $REF_NAME" >&2
+              exit 1
+            }
+            version="${REF_NAME#v}"
+            base_version="${version%%-*}"
+            [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || {
+              echo "release tag is not semver-shaped: $REF_NAME" >&2
+              exit 1
+            }
+            [[ "$base_version" == "$cargo_version" ]] || {
+              echo "tag $REF_NAME does not match Cargo.toml version $cargo_version" >&2
+              exit 1
+            }
+          else
+            # Manual dispatch from a branch is a smoke build only. It gets a
+            # unique, visibly non-publishable version and cannot create a tag.
+            [[ "$EVENT_NAME" == workflow_dispatch ]] || {
+              echo "release workflow must run from a v* tag" >&2
+              exit 1
+            }
+            version="${cargo_version}-dev.${GITHUB_RUN_NUMBER}"
+          fi
+
+          source_date_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
+          [[ "$source_date_epoch" =~ ^[0-9]+$ ]] || source_date_epoch=0
+          prerelease=false
+          [[ "$version" == *-* ]] && prerelease=true
+          can_publish=false
+          if [[ "$EVENT_NAME" == workflow_dispatch && "$REF_TYPE" == tag \
+              && "$PUBLISH_REQUESTED" == true ]]; then
+            can_publish=true
+          fi
+
+          {
+            printf 'version=%s\n' "$version"
+            printf 'prerelease=%s\n' "$prerelease"
+            printf 'can_publish=%s\n' "$can_publish"
+            printf 'source_date_epoch=%s\n' "$source_date_epoch"
+          } >> "$GITHUB_OUTPUT"
+
+  linux:
+    name: Linux (${{ matrix.target }})
+    needs: prepare
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # Ubuntu 22.04 keeps the x86_64 glibc baseline deliberately broad.
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-          # A native arm64 runner, so the GUI's system libraries need no
-          # cross-compilation sysroot.
+            arch: x86_64
+            appimage_sha256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+            linuxdeploy_sha256: c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d
+          # Native arm64 avoids a cross sysroot for the GUI and audio stack.
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-          # Cross-compiled from x64: the MSVC arm64 linker ships with the
-          # runner's Visual Studio.
-          - os: windows-latest
-            target: aarch64-pc-windows-msvc
+            arch: aarch64
+            appimage_sha256: f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158
+            linuxdeploy_sha256: 620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff
+    env:
+      SOURCE_DATE_EPOCH: ${{ needs.prepare.outputs.source_date_epoch }}
+      APPIMAGE_TOOL_VERSION: 1.9.1
+      LINUXDEPLOY_VERSION: 1-alpha-20251107-1
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      # The repository pins its toolchain; add the cross-target's standard
-      # library to the toolchain the pin actually resolves to.
       - run: rustup target add ${{ matrix.target }}
-      - name: GUI build dependencies
-        if: runner.os == 'Linux'
+      - name: Install GUI and AppImage dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libpulse-dev libxkbcommon-dev \
-            libwayland-dev libgl1-mesa-dev
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libpulse-dev libxkbcommon-dev libwayland-dev \
+            libgl1-mesa-dev patchelf fuse3 file curl
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
-
-      - run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Package
+          shared-key: release-${{ matrix.target }}
+      - name: Build release binary
+        run: cargo build --locked --release --target ${{ matrix.target }}
+      - uses: actions/cache@v4
+        with:
+          path: .ci-cache/appimage-tools
+          key: appimage-tools-${{ matrix.arch }}-appimagetool-1.9.1-linuxdeploy-1-alpha-20251107-1
+      - name: Download pinned AppImage tools
+        shell: bash
+        env:
+          APPIMAGE_SHA256: ${{ matrix.appimage_sha256 }}
+          LINUXDEPLOY_SHA256: ${{ matrix.linuxdeploy_sha256 }}
+        run: |
+          set -euo pipefail
+          tool_dir="$GITHUB_WORKSPACE/.ci-cache/appimage-tools/${{ matrix.arch }}"
+          mkdir -p "$tool_dir"
+          appimage="$tool_dir/appimagetool"
+          linuxdeploy="$tool_dir/linuxdeploy"
+          if [[ ! -x "$appimage" ]] || ! echo "$APPIMAGE_SHA256  $appimage" | sha256sum -c -; then
+            curl --fail --location --retry 3 \
+              "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGE_TOOL_VERSION}/appimagetool-${{ matrix.arch }}.AppImage" \
+              --output "$appimage"
+            echo "$APPIMAGE_SHA256  $appimage" | sha256sum -c -
+            chmod 755 "$appimage"
+          fi
+          if [[ ! -x "$linuxdeploy" ]] || ! echo "$LINUXDEPLOY_SHA256  $linuxdeploy" | sha256sum -c -; then
+            curl --fail --location --retry 3 \
+              "https://github.com/linuxdeploy/linuxdeploy/releases/download/${LINUXDEPLOY_VERSION}/linuxdeploy-${{ matrix.arch }}.AppImage" \
+              --output "$linuxdeploy"
+            echo "$LINUXDEPLOY_SHA256  $linuxdeploy" | sha256sum -c -
+            chmod 755 "$linuxdeploy"
+          fi
+          echo "APPIMAGETOOL=$appimage" >> "$GITHUB_ENV"
+          echo "LINUXDEPLOY=$linuxdeploy" >> "$GITHUB_ENV"
+      - name: Build portable archive and AppImage
         shell: bash
         run: |
-          name="woofer-${GITHUB_REF_NAME}-${{ matrix.target }}"
-          mkdir -p "dist/$name"
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            cp "target/${{ matrix.target }}/release/woofer.exe" "dist/$name/"
-          else
-            cp "target/${{ matrix.target }}/release/woofer" "dist/$name/"
-          fi
-          cp README.md LICENSE "dist/$name/"
-          if [ "${{ runner.os }}" = "Linux" ]; then
-            # Desktop integration for package builds and hand-installs.
-            cp -r packaging "dist/$name/"
-            rm -rf "dist/$name/packaging/macos"
-          fi
-          cd dist
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            7z a "$name.zip" "$name"
-          else
-            tar czf "$name.tar.gz" "$name"
-          fi
+          mkdir -p dist
+          bash packaging/release/build-linux.sh \
+            --binary "target/${{ matrix.target }}/release/woofer" \
+            --target "${{ matrix.target }}" \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --output-dir dist \
+            --appimage-tool "$APPIMAGETOOL" \
+            --linuxdeploy-tool "$LINUXDEPLOY"
+          test -s "dist/woofer-v${{ needs.prepare.outputs.version }}-${{ matrix.target }}.tar.gz"
+          test -s "dist/woofer-v${{ needs.prepare.outputs.version }}-${{ matrix.target }}.AppImage"
+          test -x "dist/woofer-v${{ needs.prepare.outputs.version }}-${{ matrix.target }}.AppImage"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
 
-      # Inno Setup ships with the runner image. PowerShell, because bash on
-      # Windows rewrites /D... arguments as paths.
-      - name: Installer
-        if: runner.os == 'Windows'
+  windows:
+    name: Windows (${{ matrix.target }})
+    needs: prepare
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+          - aarch64-pc-windows-msvc
+    env:
+      SOURCE_DATE_EPOCH: ${{ needs.prepare.outputs.source_date_epoch }}
+      # Optional Authenticode signing is enabled only when both documented
+      # repository secrets are present; otherwise the portable zip and
+      # installer remain deliberately unsigned. As with Apple credentials,
+      # the secret values are gated to an explicit publish dispatch from a tag
+      # so ordinary tag-push smoke builds cannot access them.
+      WINDOWS_SIGNING_CONFIGURED: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true && github.ref_type == 'tag' && secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64 != '' && secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD != '' }}
+      WINDOWS_SIGNING_CERTIFICATE_BASE64: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true && github.ref_type == 'tag' && secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64 || '' }}
+      WINDOWS_SIGNING_CERTIFICATE_PASSWORD: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true && github.ref_type == 'tag' && secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD || '' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: rustup target add ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+      - name: Build release binary
+        run: cargo build --locked --release --target ${{ matrix.target }}
+      - name: Ensure Inno Setup
         shell: pwsh
         run: |
-          $version = $env:GITHUB_REF_NAME.TrimStart("v")
-          $arch = "${{ matrix.target }}".Split("-")[0]
-          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
-          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
-          & $iscc "/DVersion=$version" "/DArch=$arch" `
+          $pathIscc = (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source
+          if (-not $pathIscc) {
+            choco install innosetup --no-progress --yes
+          }
+          # Chocolatey does not refresh the current process PATH. Probe the
+          # conventional install locations explicitly after installation.
+          $programFilesX86 = [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
+          $candidates = @($pathIscc)
+          if ($programFilesX86) {
+            $candidates += Join-Path $programFilesX86 'Inno Setup 6\ISCC.exe'
+          }
+          if ($env:ProgramFiles) {
+            $candidates += Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe'
+          }
+          $iscc = $candidates |
+            Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } |
+            Select-Object -First 1
+          if (-not $iscc) {
+            throw "Inno Setup (ISCC.exe) is unavailable; searched: $($candidates -join ', ')"
+          }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      # Optional Authenticode contract: set both WINDOWS_SIGNING_CERTIFICATE_BASE64
+      # (a base64-encoded PFX) and WINDOWS_SIGNING_CERTIFICATE_PASSWORD in the
+      # repository. Missing either secret deliberately leaves an unsigned
+      # build; the workflow never creates or checks in a certificate.
+      - name: Optional Authenticode signing (binary)
+        if: env.WINDOWS_SIGNING_CONFIGURED == 'true'
+        shell: pwsh
+        run: |
+          $signtool = (Get-Command signtool.exe -ErrorAction SilentlyContinue).Source
+          if (-not $signtool) { throw 'signtool.exe is required when Authenticode signing is enabled' }
+          $pfx = Join-Path $env:RUNNER_TEMP 'woofer-signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERTIFICATE_BASE64))
+          $binary = "target\${{ matrix.target }}\release\woofer.exe"
+          & $signtool sign /fd SHA256 /f $pfx /p $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD /tr http://timestamp.entrust.net/TSS/AuthenticodeTS2022 /td SHA256 $binary
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build portable zip
+        shell: bash
+        run: |
+          mkdir -p dist
+          name="woofer-v${{ needs.prepare.outputs.version }}-${{ matrix.target }}"
+          bash packaging/release/archive.sh \
+            --binary "target/${{ matrix.target }}/release/woofer.exe" \
+            --name "$name" --format zip --platform windows --output-dir dist
+      - name: Build per-user installer
+        shell: pwsh
+        run: |
+          $version = '${{ needs.prepare.outputs.version }}'
+          $arch = '${{ matrix.target }}'.Split('-')[0]
+          & $env:ISCC `
+            "/DVersion=$version" "/DArch=$arch" `
             "/DBinary=$PWD\target\${{ matrix.target }}\release\woofer.exe" `
             "/DOutputDir=$PWD\dist" packaging\windows\woofer.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
+      - name: Optional Authenticode signing (installer)
+        if: env.WINDOWS_SIGNING_CONFIGURED == 'true'
+        shell: pwsh
+        run: |
+          $signtool = (Get-Command signtool.exe -ErrorAction SilentlyContinue).Source
+          if (-not $signtool) { throw 'signtool.exe is required when Authenticode signing is enabled' }
+          $pfx = Join-Path $env:RUNNER_TEMP 'woofer-signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERTIFICATE_BASE64))
+          $setup = Get-ChildItem dist -Filter '*-setup.exe' | Select-Object -First 1
+          if (-not $setup) { throw 'Inno Setup did not produce a setup executable' }
+          & $signtool sign /fd SHA256 /f $pfx /p $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD /tr http://timestamp.entrust.net/TSS/AuthenticodeTS2022 /td SHA256 $setup.FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify Windows assets
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem dist -File
+          if ($files.Count -lt 2) { throw 'portable zip and installer were not both created' }
+          foreach ($file in $files) { if ($file.Length -eq 0) { throw "$($file.Name) is empty" } }
       - uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.target }}
-          path: |
-            dist/*.tar.gz
-            dist/*.zip
-            dist/*-setup.exe
+          name: windows-${{ matrix.target }}
+          path: dist/*
           if-no-files-found: error
+          compression-level: 0
 
   macos:
-    name: macOS universal app
+    name: macOS universal
+    needs: prepare
     runs-on: macos-latest
+    timeout-minutes: 45
     env:
-      # Signing and notarization run only when the Apple credentials exist as
-      # repository secrets; without them the DMG ships unsigned and the
-      # download page explains the Privacy & Security dance.
-      APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+      SOURCE_DATE_EPOCH: ${{ needs.prepare.outputs.source_date_epoch }}
+      # Optional Apple contract: set all six repository secrets —
+      # APPLE_CERTIFICATE_P12 (base64 .p12), APPLE_CERTIFICATE_PASSWORD,
+      # APPLE_SIGNING_IDENTITY (Developer ID Application), APPLE_ID,
+      # APPLE_TEAM_ID, and APPLE_APP_PASSWORD (an app-specific password).
+      # The unsigned path is useful while an Apple Developer account is not
+      # configured.
+      # Secrets are intentionally withheld from tag-push smoke builds; they
+      # enter only the explicit publish run selected from a tag.
+      APPLE_CERTIFICATE_P12: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true && github.ref_type == 'tag' && secrets.APPLE_CERTIFICATE_P12 || '' }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true && github.ref_type == 'tag' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+      APPLE_SIGNING_IDENTITY: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true && github.ref_type == 'tag' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+      APPLE_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true && github.ref_type == 'tag' && secrets.APPLE_ID || '' }}
+      APPLE_TEAM_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true && github.ref_type == 'tag' && secrets.APPLE_TEAM_ID || '' }}
+      APPLE_APP_PASSWORD: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true && github.ref_type == 'tag' && secrets.APPLE_APP_PASSWORD || '' }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -118,89 +335,147 @@ jobs:
       - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
         with:
-          key: macos-universal
-
+          shared-key: release-macos-universal
       - name: Build both architectures
         run: |
-          cargo build --release --target aarch64-apple-darwin
-          cargo build --release --target x86_64-apple-darwin
-
-      - name: Universal binary
+          cargo build --locked --release --target aarch64-apple-darwin
+          cargo build --locked --release --target x86_64-apple-darwin
+      - name: Validate Apple credential set
+        id: apple
+        shell: bash
+        run: |
+          set -euo pipefail
+          values=(
+            "$APPLE_CERTIFICATE_P12"
+            "$APPLE_CERTIFICATE_PASSWORD"
+            "$APPLE_SIGNING_IDENTITY"
+            "$APPLE_ID"
+            "$APPLE_TEAM_ID"
+            "$APPLE_APP_PASSWORD"
+          )
+          present=0
+          missing=0
+          for value in "${values[@]}"; do
+            if [[ -n "$value" ]]; then present=$((present + 1)); else missing=$((missing + 1)); fi
+          done
+          if (( present == 0 )); then
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+            echo 'Apple signing and notarization are not configured; building an ad-hoc DMG.'
+          elif (( missing == 0 )); then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'Apple credentials are only partially configured; refusing a misleading unsigned release.' >&2
+            exit 1
+          fi
+      - name: Import signing certificate
+        if: steps.apple.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/woofer-signing.keychain-db"
+          printf '%s' "$APPLE_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/woofer-cert.p12"
+          security create-keychain -p ci "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p ci "$keychain"
+          security import "$RUNNER_TEMP/woofer-cert.p12" -k "$keychain" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k ci "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain
+          echo "SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+      - name: Create universal app bundle
+        env:
+          # Use the gated job environment so tag-push smoke builds never read
+          # Apple credentials; only an explicit publish dispatch can sign.
+          CODESIGN_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
         run: |
           mkdir -p universal
           lipo -create \
             target/aarch64-apple-darwin/release/woofer \
             target/x86_64-apple-darwin/release/woofer \
             -output universal/woofer
-
-      - name: App bundle
+          bash packaging/macos/bundle.sh universal/woofer Woofer.app \
+            '${{ needs.prepare.outputs.version }}'
+          lipo -info Woofer.app/Contents/MacOS/woofer
+          codesign --verify --strict Woofer.app
+      - name: Create DMG
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          bash packaging/macos/bundle.sh universal/woofer Woofer.app "$version"
-
-      - name: Import signing certificate
-        if: env.APPLE_CERTIFICATE_P12 != ''
-        run: |
-          keychain="$RUNNER_TEMP/signing.keychain-db"
-          echo "$APPLE_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security create-keychain -p ci "$keychain"
-          security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p ci "$keychain"
-          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" \
-            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -k ci "$keychain"
-          security list-keychains -d user -s "$keychain" login.keychain
-
-      - name: Sign
-        if: env.APPLE_CERTIFICATE_P12 != ''
-        run: |
-          codesign --force --deep --options runtime --timestamp \
-            --sign "$APPLE_SIGNING_IDENTITY" Woofer.app
-
-      - name: DMG
-        run: |
-          name="woofer-${GITHUB_REF_NAME}-macos-universal"
-          stage="$RUNNER_TEMP/dmg"
+          set -euo pipefail
+          name="woofer-v${{ needs.prepare.outputs.version }}-macos-universal"
+          stage="$RUNNER_TEMP/woofer-dmg"
+          rm -rf "$stage"
           mkdir -p "$stage"
           cp -R Woofer.app "$stage/"
           cp README.md LICENSE "$stage/"
           ln -s /Applications "$stage/Applications"
+          find "$stage" -exec touch -t 198001010000 {} +
           mkdir -p dist
           hdiutil create -volname Woofer -srcfolder "$stage" -ov \
             -format UDZO "dist/$name.dmg"
-
-      - name: Notarize
-        if: env.APPLE_CERTIFICATE_P12 != ''
+          hdiutil imageinfo "dist/$name.dmg" >/dev/null
+      - name: Notarize and staple DMG
+        if: steps.apple.outputs.enabled == 'true'
         run: |
-          name="woofer-${GITHUB_REF_NAME}-macos-universal"
+          name="woofer-v${{ needs.prepare.outputs.version }}-macos-universal"
           xcrun notarytool submit "dist/$name.dmg" --wait \
             --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_APP_PASSWORD"
           xcrun stapler staple "dist/$name.dmg"
-
+      - name: Remove temporary signing keychain
+        if: always() && steps.apple.outputs.enabled == 'true'
+        shell: bash
+        run: security delete-keychain "$SIGNING_KEYCHAIN" || true
       - uses: actions/upload-artifact@v7
         with:
           name: macos-universal
-          path: dist/*.dmg
+          path: dist/*
           if-no-files-found: error
+          compression-level: 0
 
-  publish:
-    name: GitHub release
-    needs: [build, macos]
+  assemble:
+    name: verify release assets
+    needs: [prepare, linux, windows, macos]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
-      - name: Checksums
-        run: |
-          cd dist
-          sha256sum * > checksums.txt
+      - name: Install archive verification tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends file unzip
+      - name: Validate names, formats, and archive paths
+        run: bash packaging/release/verify-artifacts.sh dist '${{ needs.prepare.outputs.version }}'
+      - name: Generate sorted checksums
+        run: bash packaging/release/checksums.sh dist
+      - name: Verify every checksum
+        working-directory: dist
+        run: sha256sum -c checksums.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-assets
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+
+  publish:
+    name: publish GitHub release
+    needs: [prepare, assemble]
+    if: needs.prepare.outputs.can_publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: release-assets
+          path: dist
+      - name: Verify checksums before publishing
+        working-directory: dist
+        run: sha256sum -c checksums.txt
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
+          fail_on_unmatched_files: true
           generate_release_notes: true
-          # A tag with a suffix (v0.4.0-rc1) is a pre-release: it stays
-          # off "latest", so the app's update check never offers it.
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}

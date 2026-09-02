@@ -51,9 +51,7 @@ impl PluginManifest {
 
     /// Whether the manifest says something this host is willing to load.
     pub fn validate(&self) -> Result<(), String> {
-        if self.id.trim().is_empty() {
-            return Err("the manifest names no id".to_string());
-        }
+        Self::validate_id(&self.id)?;
         if self.api != ABI_VERSION {
             return Err(format!(
                 "the manifest wants plugin API {}; this build speaks {ABI_VERSION}",
@@ -62,6 +60,51 @@ impl PluginManifest {
         }
         if self.capabilities.is_empty() {
             return Err("the manifest claims no capabilities".to_string());
+        }
+        if self
+            .capabilities
+            .iter()
+            .any(|capability| capability.trim().is_empty())
+        {
+            return Err("the manifest claims an empty capability".to_string());
+        }
+        Ok(())
+    }
+
+    /// Whether `id` is safe to use as a plugin filename on every platform we
+    /// support. A deliberately small ASCII slug avoids separators, device
+    /// names, and Unicode normalization differences between filesystems.
+    pub(crate) fn validate_id(id: &str) -> Result<(), String> {
+        if id.is_empty() {
+            return Err("the manifest names no id".to_string());
+        }
+        if id.len() > 64
+            || !id.chars().all(|character| {
+                character.is_ascii_lowercase()
+                    || character.is_ascii_digit()
+                    || character == '-'
+                    || character == '_'
+            })
+            || !id.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
+            || !id.as_bytes().last().is_some_and(u8::is_ascii_alphanumeric)
+        {
+            return Err(format!(
+                "the manifest id {:?} cannot be a portable plugin file name",
+                id
+            ));
+        }
+        let reserved = matches!(
+            id.to_ascii_uppercase().as_str(),
+            "CON" | "PRN" | "AUX" | "NUL"
+        ) || (id.len() == 4
+            && (id[..3].eq_ignore_ascii_case("COM") || id[..3].eq_ignore_ascii_case("LPT"))
+            && id.as_bytes()[3].is_ascii_digit()
+            && id.as_bytes()[3] != b'0');
+        if reserved {
+            return Err(format!(
+                "the manifest id {:?} is reserved by the platform",
+                id
+            ));
         }
         Ok(())
     }
@@ -131,6 +174,41 @@ mod tests {
         assert!(PluginManifest::parse(r#"{"api":1,"capabilities":["x"]}"#).is_err());
         assert!(PluginManifest::parse(r#"{"id":"x","api":1}"#).is_err());
         assert!(PluginManifest::parse("not json").is_err());
+    }
+
+    #[test]
+    fn a_manifest_cannot_escape_the_plugin_directory() {
+        for id in [
+            "../outside",
+            "foo/bar",
+            "foo\\bar",
+            "foo:bar",
+            "C:",
+            "\u{0}",
+            "name.with.dot",
+            "-leading",
+            "trailing-",
+        ] {
+            let text = format!(r#"{{"id":{id:?},"api":1,"capabilities":["provider:translate"]}}"#);
+            assert!(PluginManifest::parse(&text).is_err(), "{id:?}");
+        }
+    }
+
+    #[test]
+    fn a_manifest_refuses_windows_device_names() {
+        for id in [
+            "CON", "con", "PRN", "AUX", "NUL", "COM1", "com9", "LPT1", "lpt9",
+        ] {
+            let text = format!(r#"{{"id":{id:?},"api":1,"capabilities":["provider:translate"]}}"#);
+            assert!(PluginManifest::parse(&text).is_err(), "{id:?}");
+        }
+        // The zero variants are ordinary portable slugs, not DOS devices.
+        for id in ["com0", "lpt0", "plugin-1", "plugin_1"] {
+            let text = format!(r#"{{"id":{id:?},"api":1,"capabilities":["provider:translate"]}}"#);
+            assert!(PluginManifest::parse(&text).is_ok(), "{id:?}");
+        }
+        let uppercase = r#"{"id":"Plugin","api":1,"capabilities":["provider:translate"]}"#;
+        assert!(PluginManifest::parse(uppercase).is_err());
     }
 
     #[test]

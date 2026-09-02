@@ -20,11 +20,25 @@ and an extendable plugin system whose catalog lives at usewoofer.com. Success
 is a client that feels lighter and faster than the official one and never
 pretends to be more than it is.
 
-## Brand Personality
+## Native app register
 
 Quiet, precise, honest. Three words: **fast, minimal, trustworthy**. The
 interface speaks in lowercase confidence — small secondary text, one green
 accent, no decoration that does not work for its keep.
+
+## Marketing-site register
+
+The public site is a different surface from the native app. It is
+**playful, music-led, and plain-spoken**: a little more colour, rhythm, and
+personality to help a listener decide whether Woofer belongs in their day.
+The site can use a bold display treatment and real screenshots, but it never
+turns technical internals into the headline or invents a feature the app does
+not have. The guide remains the source of truth for setup, privacy, plugins,
+and platform details.
+
+The future mascot belongs to this marketing register. It should be an
+inviting signpost, not a substitute for the existing app icon or a claim about
+the product.
 
 ## Anti-references
 

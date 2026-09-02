@@ -47,12 +47,13 @@ Woofer deliberately has a limited scope:
   only takes playback commands from Premium accounts. Browsing and search
   work on any account, and Woofer says so when a Free account signs in.
 - Initial setup has two sign-ins because Spotify grants Web API and streaming
-  access separately. [How it connects](/how-it-connects/) explains why.
+  access separately. [How it connects](/how-it-connects) explains why.
 - Local playback tops out at 320 kbps. Spotify protects its lossless streams
   with DRM that librespot does not support, and Woofer will not circumvent
   it. This can change if [lawful support lands upstream](https://github.com/librespot-org/librespot/issues/1583).
 - No video podcasts or social features.
-- Playlist reordering is a menu action, not drag-and-drop.
+- Playlist rows can be reordered by dragging or from their context menu; the
+  rest of the sidebar can be arranged the same way.
 - Woofer is an **unofficial** client built on Spotify's public Web API
   and librespot. Spotify changes these from time to time; when they do,
   features can break until the client catches up.

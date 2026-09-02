@@ -1,24 +1,50 @@
+---
+title: Release plan
+description: The reproducible runbook for publishing Woofer builds and package-manager manifests.
+---
+
 # Release and packaging runbook
 
-State: **halted at the user's request** (Aug 29, 2026). The `v0.3.0` tag
-was pushed, triggered nothing (fork Actions quirk), and was deleted; zero
-releases exist. Version `0.3.0` is already set in `Cargo.toml`. When the
-user says go, run this top to bottom.
+State: **release preparation authorized** (Sep 2, 2026). An earlier `v0.3.0`
+tag attempt triggered nothing (fork Actions quirk) and was deleted; zero
+releases exist. The working tree is now version `0.4.0` in `Cargo.toml`.
+After the release workflow lands on `main` and its branch smoke run passes,
+run this top to bottom with that version.
 
-## 0. Cut the release
+## 0. Cut, verify, and publish the release
 
 ```bash
-git tag v0.3.0 && git push origin v0.3.0
+git tag v0.4.0 && git push origin v0.4.0
 ```
 
-Then **verify a run appeared** (`gh run list --repo kreatzzz/woofer`): the
-release workflow has no `workflow_dispatch`, only the `v*` tag trigger, and
-once the tag push silently produced zero runs. If nothing fires, delete and
-re-push the tag, or trigger from the Actions tab. The build takes
-~15 minutes: Linux x64 + arm64 tarballs, Windows x64 + arm64 (zip + Inno
-Setup `woofer-v…-setup.exe`), macOS universal DMG (unsigned — no Apple
-secrets; users right-click → Open), `checksums.txt`. All land at
-`github.com/kreatzzz/woofer/releases`.
+Then **verify a run appeared** (`gh run list --repo kreatzzz/woofer`). A tag
+push runs the complete build and verification matrix but does not publish a
+GitHub release. The workflow also accepts a manual dispatch: a branch run is
+an isolated smoke build named `0.4.0-dev.<run-number>`, while a dispatch from
+the release tag can publish only when the `publish` input is explicitly set
+to `true`.
+
+After the tag run is green, start the publish pass from that same tag:
+
+```bash
+gh workflow run Release --repo kreatzzz/woofer --ref v0.4.0 -f publish=true
+```
+
+The assemble job validates every name, archive path, and checksum before the
+publish job uploads anything. Each successful build contains:
+
+- Linux x86_64 and arm64 portable `.tar.gz` archives plus AppImages, built
+  with pinned, SHA-256-verified AppImage tools;
+- Windows x86_64 and arm64 portable `.zip` archives plus per-user Inno Setup
+  installers;
+- one universal macOS DMG; and
+- a sorted `checksums.txt` covering every asset.
+
+Windows Authenticode signing is optional, enabled only when both documented
+certificate secrets exist. macOS signing and notarization are optional too,
+but require the complete six-secret Apple contract; otherwise the DMG is
+ad-hoc/unsigned and needs the usual first-open approval. Tag-push smoke runs
+never receive signing secrets.
 
 ## 1. Homebrew tap (~10 min, fully scriptable)
 
@@ -32,7 +58,7 @@ mkdir -p Casks
 
 ```ruby
 cask "woofer" do
-  version "0.3.0"
+  version "0.4.0"
   sha256 "SHA256_OF_THE_DMG"   # from the release's checksums.txt
 
   url "https://github.com/kreatzzz/woofer/releases/download/v#{version}/woofer-v#{version}-macos-universal.dmg"
@@ -50,9 +76,10 @@ end
 ```
 
 Commit, push. Users: `brew install kreatzzz/tap/woofer`. Every future
-release: bump `version` + `sha256` in one tap commit. Unsigned-DMG note
-belongs in the README: right-click → Open, or
-`xattr -cr /Applications/Woofer.app`.
+release: bump `version` + `sha256` in one tap commit. If the first DMG is
+unsigned, put the first-open note in the README: right-click → Open, or
+`xattr -cr /Applications/Woofer.app`. Add the direct release URL only after
+the explicit publish pass has created a public asset.
 
 ## 2. AUR (~20 min, needs the user's aur.archlinux.org account + SSH key)
 
@@ -62,7 +89,7 @@ Two packages, each pushed to `aur@aur.archlinux.org:<pkg>.git`:
 
 ```sh
 pkgname=woofer
-pkgver=0.3.0
+pkgver=0.4.0
 pkgrel=1
 pkgdesc="Fast, lightweight, native Spotify client built with Rust and egui"
 arch=('x86_64')
@@ -94,9 +121,9 @@ build with `cargo build --release --locked`, same `package()` installs.
 ## 3. winget (Windows; the bureaucratic one)
 
 1. Fork `microsoft/winget-pkgs` under `kreatzzz`, shallow-clone it.
-2. Add `manifests/k/kreatzzz/Woofer/0.3.0/` with three YAML files:
+2. Add `manifests/k/kreatzzz/Woofer/0.4.0/` with three YAML files:
    - `kreatzzz.Woofer.yaml` — `PackageIdentifier: kreatzzz.Woofer`,
-     `PackageVersion: 0.3.0`, `PackageLocale`, `Publisher: kreatzzz`,
+     `PackageVersion: 0.4.0`, `PackageLocale`, `Publisher: kreatzzz`,
      `PackageName: Woofer`, `License: MIT`,
      `ShortDescription`, `Moniker: woofer`.
    - `kreatzzz.Woofer.installer.yaml` — `InstallerType: inno`, both
@@ -112,13 +139,14 @@ build with `cargo build --release --locked`, same `package()` installs.
    submitters need a seasoned GitHub account — having the tap and AUR
    package public first helps the review.
 
-Future versions: a new `0.3.1/` folder per release.
+Future versions: a new version folder per release.
 
 ## After the first release
 
 - Bump the tap (version + sha256) — one commit.
-- `docs/_guide/download.md` currently describes upstream's channels;
-  update it when Homebrew/AUR/winget are live.
+- `docs/_guide/download.md` records the paused release state and the source
+  install path; add direct package links there when Homebrew/AUR/winget are
+  live.
 - The update checker (`src/updates.rs`) watches
   `kreatzzz/woofer/releases/latest` — it starts working from the first
   real release.

@@ -1,9 +1,11 @@
+# legacy Jekyll settings retained until the Pages workflow switches to
+# VitePress; the canonical site configuration lives in .vitepress/config.mjs.
 title: Woofer
 woofer_version: "0.4.0"
-description: A fast, native Spotify client for Linux, macOS, and Windows, written in Rust.
+description: A fast, native Spotify client for Linux, macOS, and Windows.
 lang: en-US
 timezone: Europe/Berlin
-url: https://github.com/kreatzzz/woofer
+url: https://usewoofer.com
 baseurl: ""
 logo: /assets/images/logo.svg
 image: /screenshot.png
@@ -81,9 +83,9 @@ jekyll_vitepress:
     enabled: true
     show_on_docs: false
     message: >-
-      Brought to you by <a href="https://kreatzzz.me" target="_blank" rel="noreferrer">Carmine Paolino</a>, maker of
+      Woofer is independent software, built for people who keep music close.
     copyright: >-
-      <span class="footer-brand-links"><a href="https://chatwithwork.com" class="footer-chatwithwork-link" target="_blank" rel="noreferrer"><img class="footer-chatwithwork-logo theme-image light" src="https://chatwithwork.com/logotype.svg" alt="Chat with Work"><img class="footer-chatwithwork-logo theme-image dark" src="https://chatwithwork.com/logotype-dark.svg" alt="Chat with Work"></a><a href="https://rubyllm.com" class="footer-rubyllm-link" target="_blank" rel="noreferrer"><img class="footer-rubyllm-logo theme-image light" src="https://rubyllm.com/assets/images/logotype.svg" alt="RubyLLM"><img class="footer-rubyllm-logo theme-image dark" src="https://rubyllm.com/assets/images/logotype_dark.svg" alt="RubyLLM"></a></span><br><span class="footer-built-with">Docs built with <a href="https://jekyll-vitepress.dev" target="_blank" rel="noreferrer">Jekyll VitePress</a>. Woofer is an independent project, not affiliated with or endorsed by Spotify AB. Spotify is a trademark of Spotify AB.</span>
+      MIT-licensed. Woofer is independent software, not affiliated with or endorsed by Spotify AB.
   doc_footer:
     enabled: true
     previous_label: Previous page
@@ -101,10 +103,6 @@ jekyll_vitepress:
     repository: kreatzzz/woofer
     text: Star
     show_count: true
-  github_sponsor:
-    enabled: true
-    user: crmne
-    text: Sponsor
 
 plugins:
   - jekyll-vitepress-theme

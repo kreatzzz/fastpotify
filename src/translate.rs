@@ -19,7 +19,10 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+use std::{fs, io::Write};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -488,14 +491,24 @@ pub(crate) fn cache_digest(payload: &str) -> String {
 /// `None` for the built-in flow's own files, and names the half otherwise,
 /// so a translation-only answer is never served where a whole one belongs.
 pub(crate) fn cache_key(scope: Option<&str>, target: &str, lines: &[&str]) -> String {
-    let mut payload = String::new();
-    if let Some(scope) = scope {
-        payload.push_str(scope);
+    // Length-prefix every field. Joining with newlines alone aliases
+    // `['a', 'b']` with `['a\nb']`, which could serve a stale answer for a
+    // different lyric shape.
+    let mut payload = String::from("woofer-translation-cache-v2");
+    for field in [scope.unwrap_or(""), target] {
         payload.push('\n');
+        payload.push_str(&field.len().to_string());
+        payload.push(':');
+        payload.push_str(field);
     }
-    payload.push_str(target);
     payload.push('\n');
-    payload.push_str(&lines.join("\n"));
+    payload.push_str(&lines.len().to_string());
+    for line in lines {
+        payload.push('\n');
+        payload.push_str(&line.len().to_string());
+        payload.push(':');
+        payload.push_str(line);
+    }
     cache_digest(&payload)
 }
 
@@ -510,6 +523,10 @@ pub(crate) fn store_cached(path: &Path, found: &Option<Translation>) {
 }
 
 fn read_cache(path: &PathBuf) -> Option<Option<Translation>> {
+    let _guard = CACHE_WRITE_LOCK
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;
     if modified.elapsed().unwrap_or(CACHE_LIFETIME) >= CACHE_LIFETIME {
         return None;
@@ -520,6 +537,9 @@ fn read_cache(path: &PathBuf) -> Option<Option<Translation>> {
         .map(|cached| cached.found)
 }
 
+static CACHE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+static CACHE_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
 fn write_cache(path: &Path, found: &Option<Translation>) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -527,7 +547,52 @@ fn write_cache(path: &Path, found: &Option<Translation>) {
     if let Ok(text) = serde_json::to_string(&Cached {
         found: found.clone(),
     }) {
-        let _ = std::fs::write(path, text);
+        // A cache write can race a reader on another backend worker. Stage
+        // and rename so readers see either the previous complete JSON or the
+        // new complete JSON, never a truncated document.
+        let _guard = CACHE_WRITE_LOCK
+            .get_or_init(Mutex::default)
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let serial = CACHE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let temp = path.with_file_name(format!(
+            ".{}.tmp-{serial}",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("cache")
+        ));
+        let backup = path.with_file_name(format!(
+            ".{}.bak-{serial}",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("cache")
+        ));
+        let write = || -> std::io::Result<()> {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp)?;
+            file.write_all(text.as_bytes())?;
+            file.sync_all()?;
+            let had_old = path.exists();
+            if had_old {
+                fs::rename(path, &backup)?;
+            }
+            if let Err(error) = fs::rename(&temp, path) {
+                if had_old {
+                    let _ = fs::rename(&backup, path);
+                }
+                return Err(error);
+            }
+            if had_old {
+                let _ = fs::remove_file(&backup);
+            }
+            Ok(())
+        };
+        if write().is_err() {
+            let _ = fs::remove_file(temp);
+            let _ = fs::remove_file(backup);
+        }
     }
 }
 
@@ -616,6 +681,35 @@ mod tests {
             cache_key(Some("translation"), "en", &lines),
             cache_key(Some("romanize"), "en", &lines)
         );
+    }
+
+    #[test]
+    fn cache_replacement_keeps_the_new_answer_on_all_filesystems() {
+        let root = std::env::temp_dir().join(format!(
+            "woofer-translation-cache-replace-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let path = root.join("answer.json");
+        let first = Some(Translation {
+            translated: vec![Some("first".into())],
+            ..Translation::default()
+        });
+        let second = Some(Translation {
+            translated: vec![Some("second".into())],
+            ..Translation::default()
+        });
+        write_cache(&path, &first);
+        assert_eq!(read_cache(&path), Some(first));
+        write_cache(&path, &second);
+        assert_eq!(read_cache(&path), Some(second));
+        assert!(std::fs::read_dir(&root).unwrap().flatten().all(|entry| {
+            entry.path().file_name().is_some_and(|name| {
+                !name.to_string_lossy().contains(".tmp-")
+                    && !name.to_string_lossy().contains(".bak-")
+            })
+        }));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

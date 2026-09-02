@@ -6,7 +6,7 @@ nav_order: 2
 
 ## Install
 
-The [Download page](/download/) has installers and archives for macOS,
+The [Download page](/download) has installers and archives for macOS,
 Windows, and Linux.
 
 Or build from source with [Rust](https://rustup.rs) 1.95 or newer:
@@ -55,7 +55,7 @@ once per machine.
 
 Playing music *on this machine* requires a second browser approval because
 Spotify treats streaming as a separate grant
-([why](/how-it-connects/)). Take it from the device menu (the speaker icon
+([why](/how-it-connects)). Take it from the device menu (the speaker icon
 in the player bar, then **Play here, set up once**) or from Settings.
 It needs Spotify Premium. Woofer saves the resulting playback credential
 for later sessions.

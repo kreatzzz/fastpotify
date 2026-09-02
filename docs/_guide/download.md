@@ -1,103 +1,81 @@
 ---
 title: Download
 description: Get Woofer for macOS, Windows, or Linux, with install instructions for each.
-nav_order: 1
 ---
 
-{% assign v = site.woofer_version %}
-{% assign base = "https://github.com/kreatzzz/woofer/releases/download/v" | append: v %}
+# Download Woofer
 
-The current version is **v{{ v }}**. Every file below, with its SHA-256, is
-listed in [checksums.txt]({{ base }}/checksums.txt); all versions live on
-the [releases page](https://github.com/kreatzzz/woofer/releases).
+Woofer is currently version **0.4.0 in the source tree**. There is no public
+binary release yet: publishing is paused while the release workflow and
+package-manager channels are prepared. This page will grow direct, checksum-
+verified downloads as soon as a tagged release is available.
 
-## macOS
+For now, the reliable way to try Woofer is to build it from source. The
+application itself is ready for Linux, macOS, and Windows; the release status
+is the part that is still in motion.
 
-One download for both Apple Silicon and Intel:
+## Build from source
 
-- [woofer-v{{ v }}-macos-universal.dmg]({{ base }}/woofer-v{{ v }}-macos-universal.dmg)
-
-Open it and drag **Woofer** to Applications. Or, with
-[Homebrew](https://brew.sh):
-
-```sh
-brew install --cask crmne/tap/woofer
-```
-
-Homebrew installs the same unnotarized build, so the first-open steps below
-still apply. To skip them, clear the quarantine flag instead:
+You need a stable [Rust](https://rustup.rs) toolchain (1.95 or newer):
 
 ```sh
-xattr -dr com.apple.quarantine /Applications/Woofer.app
+git clone https://github.com/kreatzzz/woofer
+cd woofer
+cargo install --path .
 ```
 
-The `-r` matters: it clears the flag from the files inside the bundle too.
-macOS 26 leaves the app bouncing in the Dock forever when only the top level
-is cleared.
-
-### First open on macOS
-
-This build is not yet notarized with Apple, so macOS blocks it the first
-time. Recent macOS versions (Sequoia and later) no longer let you bypass
-this with a right-click, so you open it once through Privacy & Security:
-
-1. Double-click **Woofer** in Applications. macOS says it cannot be
-   opened because Apple cannot check it for malicious software. Click
-   **Done** (do **not** click Move to Trash).
-2. Open **System Settings**, then **Privacy & Security**.
-3. Scroll down to the **Security** section, find *"Woofer was blocked
-   to protect your Mac"*, and click **Open Anyway**.
-4. Authenticate, then click **Open Anyway** once more.
-
-macOS remembers the choice, so later launches work with an ordinary
-double-click.
-
-## Windows
-
-The installer adds Woofer to the Start menu and needs no administrator
-rights. Choose x86_64 for most PCs or aarch64 for Windows on ARM:
-
-- [woofer-v{{ v }}-x86_64-pc-windows-msvc-setup.exe]({{ base }}/woofer-v{{ v }}-x86_64-pc-windows-msvc-setup.exe)
-- [woofer-v{{ v }}-aarch64-pc-windows-msvc-setup.exe]({{ base }}/woofer-v{{ v }}-aarch64-pc-windows-msvc-setup.exe)
-
-If you would rather not install anything, the same program comes as a zip:
-unpack it and run `woofer.exe`.
-
-- [woofer-v{{ v }}-x86_64-pc-windows-msvc.zip]({{ base }}/woofer-v{{ v }}-x86_64-pc-windows-msvc.zip)
-- [woofer-v{{ v }}-aarch64-pc-windows-msvc.zip]({{ base }}/woofer-v{{ v }}-aarch64-pc-windows-msvc.zip)
-
-Either way, SmartScreen may warn about an unknown publisher on first run;
-choose More info, then Run anyway.
-
-## Linux
-
-### Arch Linux
-
-Woofer is in the AUR, with the desktop entry and icon installed for you:
+On Linux, install the desktop and audio development libraries first. On Arch:
 
 ```sh
-yay -S woofer          # the released build
-yay -S woofer-git      # built from the latest commit
+sudo pacman -S --needed alsa-lib libpulse libxkbcommon wayland
 ```
 
-### Flatpak
-
-[FlatPark](https://flatpark.org/apps/rocks.woofer.Woofer) packages
-each Linux release as a sandboxed Flatpak and follows every new version:
+On Debian or Ubuntu:
 
 ```sh
-flatpak remote-add --if-not-exists flatpark https://dl.flatpark.org/flatpark.flatpakrepo
-flatpak install flatpark rocks.woofer.Woofer
+sudo apt install libasound2-dev libpulse-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev
 ```
 
-### Other distributions
+The repository's [Nix development shell](https://nixos.org) provides the
+same libraries and the pinned toolchain.
 
-- [woofer-v{{ v }}-x86_64-unknown-linux-gnu.tar.gz]({{ base }}/woofer-v{{ v }}-x86_64-unknown-linux-gnu.tar.gz)
-- [woofer-v{{ v }}-aarch64-unknown-linux-gnu.tar.gz]({{ base }}/woofer-v{{ v }}-aarch64-unknown-linux-gnu.tar.gz)
+## What the release will include
 
-Unpack, put `woofer` on your PATH, and copy the desktop entry and icon
-from the bundled `packaging/` directory if you want it in your launcher.
-Runtime needs are the ordinary desktop libraries: ALSA, PulseAudio or
-PipeWire, and Wayland or X11.
+Once a release is tagged, the GitHub release will carry:
 
-Or build from source: see [Getting Started](/getting-started/).
+- a universal macOS DMG for Apple Silicon and Intel;
+- Windows installers and portable archives for x86_64 and ARM64;
+- Linux archives for x86_64 and ARM64;
+- `checksums.txt` with a SHA-256 entry for every file.
+
+Watch the [Woofer releases](https://github.com/kreatzzz/woofer/releases) page
+for the first published build. The [release plan](/dev/release-plan) records
+the package-manager order and the unsigned macOS first-open note.
+
+## Platform notes
+
+### macOS
+
+The first public DMG may be unsigned while Apple credentials are being
+configured. An unsigned build asks you to approve Woofer once in **System
+Settings → Privacy & Security**; later launches work normally. A signed and
+notarized DMG skips that first-open warning when the release workflow's full
+Apple contract is configured.
+
+### Windows
+
+The installer needs no administrator rights. SmartScreen may warn about an
+unknown publisher the first time; choose **More info → Run anyway** after
+checking the checksum from the release.
+
+### Linux
+
+The archive includes the binary and desktop integration files. Runtime needs
+are the ordinary desktop libraries: ALSA, PulseAudio or PipeWire, and Wayland
+or X11. Arch users can use the AUR once the first package is published.
+
+## Package managers
+
+Homebrew, AUR, and winget packages are planned in that order. They are not
+published yet, so commands such as `brew install` and `yay -S` are intentionally
+not presented as working instructions.

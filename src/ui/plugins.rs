@@ -234,6 +234,9 @@ fn plugin_row(
                     theme::regular(12.5),
                     palette.dim,
                 );
+                if app.disabled_plugins.contains(&plugin.id) {
+                    chip(ui, palette, "disabled this session");
+                }
             });
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;

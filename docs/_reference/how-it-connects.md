@@ -27,13 +27,13 @@ Local playback authorization stays separate from both Web API grants.
 By default the Web API uses the shared public application also used by
 spotify-player, ncspot, and Omarchy Spotify, whose allowance Spotify
 divides among everyone running any of them. An application of your own adds a
-separate Development Mode quota; [Make It Even Faster](/make-it-even-faster/)
+separate Development Mode quota; [Make It Even Faster](/make-it-even-faster)
 shows how to add one.
 
 ## What the client stores
 
 - The shared and personal Web API refresh tokens and librespot's reusable credential, owner-only,
-  in the state directory ([where](/settings-and-files/)).
+  in the state directory ([where](/settings-and-files)).
 - Downloaded audio and artwork, in the cache directory, within the budget
   you set.
 - Lyrics, in the cache directory, for a month.

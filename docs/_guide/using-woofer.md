@@ -86,7 +86,7 @@ Once connected, it appears as an ordinary Spotify Connect device and playback
 moves to it.
 
 This uses the credential stored for playing on this computer, so enable
-playback here first (see [Getting Started](/getting-started/)). Receivers
+playback here first (see [Getting Started](/getting-started)). Receivers
 that ask for a different kind of login are not connected this way yet.
 
 ## Lyrics

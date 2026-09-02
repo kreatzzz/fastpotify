@@ -16,6 +16,8 @@ use serde::Deserialize;
 
 use std::time::Duration;
 
+use crate::plugins::PluginManifest;
+
 /// The catalog the deep links resolve against; Settings may override it
 /// later, so keep this the single place the default lives.
 pub const DEFAULT_CATALOG_URL: &str = "https://usewoofer.com/registry.json";
@@ -94,9 +96,16 @@ impl Entry {
                 self.id
             ));
         }
-        if !(self.wasm.starts_with("https://") || self.wasm.starts_with("http://")) {
+        let wasm_url = reqwest::Url::parse(&self.wasm).ok();
+        if wasm_url.as_ref().is_none_or(|url| {
+            url.scheme() != "https"
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.port().is_some_and(|port| port != 443)
+        }) {
             return Err(format!(
-                "the catalog entry {} has no absolute wasm address",
+                "the catalog entry {} has no secure absolute wasm address",
                 self.id
             ));
         }
@@ -195,6 +204,35 @@ pub fn matches_sha256(bytes: &[u8], sha256: &str) -> bool {
     let digest = Sha256::digest(bytes);
     let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
     hex.eq_ignore_ascii_case(sha256)
+}
+
+/// Checks that the manifest a downloaded module declares is the same trust
+/// contract the user saw in the catalog. The manager performs its ordinary
+/// ABI validation again before publishing; this comparison belongs here so
+/// a catalog offer cannot silently install a different publisher, version,
+/// capability, or domain allowlist.
+pub fn manifest_matches(entry: &CatalogEntry, manifest: &PluginManifest) -> Result<(), String> {
+    let mismatch =
+        |field: &str| format!("the downloaded plugin manifest disagrees with the catalog {field}");
+    if manifest.id != entry.id {
+        return Err(mismatch("id"));
+    }
+    if manifest.name != entry.name {
+        return Err(mismatch("name"));
+    }
+    if manifest.publisher != entry.publisher {
+        return Err(mismatch("publisher"));
+    }
+    if manifest.version != entry.version {
+        return Err(mismatch("version"));
+    }
+    if manifest.capabilities != entry.capabilities {
+        return Err(mismatch("capabilities"));
+    }
+    if manifest.domains != entry.domains {
+        return Err(mismatch("domains"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -334,5 +372,43 @@ mod tests {
         assert!(matches_sha256(bytes, &real));
         assert!(matches_sha256(bytes, &real.to_ascii_lowercase()));
         assert!(!matches_sha256(bytes, &format!("{real}0")));
+    }
+
+    #[test]
+    fn a_downloaded_manifest_must_match_the_catalog_offer() {
+        let entry = CatalogEntry {
+            id: "translate".into(),
+            name: "Translate".into(),
+            publisher: "kreatzzz".into(),
+            version: "1.0.0".into(),
+            capabilities: vec!["provider:translate".into()],
+            domains: vec!["clients5.google.com".into()],
+            homepage: String::new(),
+            wasm: "https://usewoofer.com/plugins/translate.wasm".into(),
+            size: 1,
+            sha256: "a".repeat(64),
+        };
+        let manifest = PluginManifest {
+            id: "translate".into(),
+            name: "Translate".into(),
+            publisher: "kreatzzz".into(),
+            version: "1.0.0".into(),
+            api: crate::plugins::ABI_VERSION,
+            capabilities: vec!["provider:translate".into()],
+            domains: vec!["clients5.google.com".into()],
+            homepage: String::new(),
+        };
+        assert!(manifest_matches(&entry, &manifest).is_ok());
+        for mutate in [
+            |manifest: &mut PluginManifest| manifest.id = "other".into(),
+            |manifest: &mut PluginManifest| manifest.publisher = "someone-else".into(),
+            |manifest: &mut PluginManifest| manifest.version = "2.0.0".into(),
+            |manifest: &mut PluginManifest| manifest.capabilities = vec!["provider:lyrics".into()],
+            |manifest: &mut PluginManifest| manifest.domains = vec!["evil.example".into()],
+        ] {
+            let mut changed = manifest.clone();
+            mutate(&mut changed);
+            assert!(manifest_matches(&entry, &changed).is_err());
+        }
     }
 }

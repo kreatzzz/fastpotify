@@ -440,6 +440,12 @@ pub enum Command {
     /// The words of a track in another script and tongue, from each kind's
     /// provider chain or, behind it, Google Translate.
     Translate(Box<TranslateRequest>),
+    /// Internal: a successful install explicitly trusts this module again,
+    /// clearing any session-local provider failure state for its identity.
+    ResetPluginHealth {
+        id: String,
+        sha256: String,
+    },
     /// Add, replace, or remove the optional personal Web API application.
     ConfigurePersonalWebApp(Option<String>),
     /// Read a playlist's cached items from disk.
@@ -523,6 +529,16 @@ pub enum Event {
         uri: String,
         target: String,
         result: Result<Option<crate::translate::Translation>, String>,
+    },
+    /// A provider has failed three runs in a row and is skipped for this
+    /// session. The app can show the id and keep the built-in fallback alive.
+    PluginDisabled {
+        id: String,
+        failures: u8,
+    },
+    /// A provider that was failing answered successfully again.
+    PluginRecovered {
+        id: String,
     },
     /// The verified personal Web API app, or `None` when it is disabled.
     WebApp {
@@ -652,7 +668,12 @@ impl Backend {
     }
 
     pub fn send(&self, command: Command) {
-        if self.offline && !matches!(command, Command::Accent { .. } | Command::Shutdown) {
+        if self.offline
+            && !matches!(
+                command,
+                Command::Accent { .. } | Command::ResetPluginHealth { .. } | Command::Shutdown
+            )
+        {
             return;
         }
         let _ = self.commands.send(command);
@@ -707,6 +728,8 @@ struct Worker {
     /// What the engine was playing when it went down, to load again once
     /// the next one is up.
     resume: Option<LoadSpec>,
+    /// Runtime-only provider health; it resets when Woofer restarts.
+    plugin_health: crate::plugins::manager::PluginHealth,
 }
 
 impl Worker {
@@ -742,6 +765,7 @@ impl Worker {
             pending_authorization: None,
             reconnects: Vec::new(),
             resume: None,
+            plugin_health: crate::plugins::manager::PluginHealth::default(),
         }
     }
 
@@ -836,6 +860,9 @@ impl Worker {
                 } => self.store_playlist_cache(id, snapshot, items),
                 Command::UserNames(ids) => self.fetch_user_names(ids),
                 Command::Translate(request) => self.fetch_translation(*request),
+                Command::ResetPluginHealth { id, sha256 } => {
+                    self.plugin_health.reset_identity(&id, &sha256)
+                }
                 Command::ConfigurePersonalWebApp(client_id) => {
                     self.configure_personal_web_app(client_id)
                 }
@@ -1415,6 +1442,7 @@ impl Worker {
         let cache_dir = self.dirs.lyrics_cache_dir();
         let engine = self.engine.clone();
         let dirs = self.dirs.clone();
+        let plugin_health = self.plugin_health.clone();
         tokio::spawn(async move {
             // Spotify's own words go first: they follow the recording
             // exactly. Everything else, a signed-out session included,
@@ -1424,7 +1452,14 @@ impl Worker {
                 None => match crate::lyrics::fetch(&http, &cache_dir, &request.query).await {
                     // Nobody here has transcribed the track — the lyrics
                     // chain gets its turn before the honest empty state.
-                    Ok(None) => Ok(plugin_lyrics(&dirs, &request.chains, &request.query).await),
+                    Ok(None) => Ok(plugin_lyrics(
+                        &dirs,
+                        &request.chains,
+                        &request.query,
+                        &plugin_health,
+                        &events,
+                    )
+                    .await),
                     found => found.map_err(|error| format!("{error:#}")),
                 },
             };
@@ -1473,11 +1508,21 @@ impl Worker {
         let waker = self.waker.clone();
         let dirs = self.dirs.clone();
         let cache_dir = self.dirs.translations_cache_dir();
+        let plugin_health = self.plugin_health.clone();
         tokio::spawn(async move {
             let lines: Vec<&str> = request.lines.iter().map(String::as_str).collect();
             // Whoever answers — a plugin or the built-in translator — the
             // answer lands the same way.
-            let result = translate_lines(&http, &dirs, &cache_dir, &request, &lines).await;
+            let result = translate_lines(
+                &http,
+                &dirs,
+                &cache_dir,
+                &request,
+                &lines,
+                &plugin_health,
+                &events,
+            )
+            .await;
             let _ = events.send(Event::Translate {
                 uri: request.uri,
                 target: request.target,
@@ -2023,25 +2068,34 @@ async fn translate_lines(
     cache_dir: &std::path::Path,
     request: &TranslateRequest,
     lines: &[&str],
+    plugin_health: &crate::plugins::manager::PluginHealth,
+    events: &std::sync::mpsc::Sender<Event>,
 ) -> Result<Option<crate::translate::Translation>, String> {
     use crate::plugins::manager;
-    let plugins = manager::list(dirs);
+    let plugins = manager::list_metadata_cached(dirs);
     // The words first: when the reader's language is already the song's,
     // there is nothing to add, and no spelling is asked for either.
-    let translated = match first_provider_data(&plugins, &request.chains, "translate", |plugin| {
-        let plugin = plugin.clone();
-        async move {
-            plugin_half(
-                dirs,
-                cache_dir,
-                &plugin,
-                "translate",
-                &request.target,
-                lines,
-            )
-            .await
-        }
-    })
+    let translated = match first_provider_data(
+        &plugins,
+        &request.chains,
+        "translate",
+        plugin_health,
+        |plugin, change| report_plugin_health(events, plugin, change),
+        |plugin| {
+            let plugin = plugin.clone();
+            async move {
+                plugin_half(
+                    dirs,
+                    cache_dir,
+                    &plugin,
+                    "translate",
+                    &request.target,
+                    lines,
+                )
+                .await
+            }
+        },
+    )
     .await
     {
         Some(half) => Some(half),
@@ -2053,27 +2107,33 @@ async fn translate_lines(
     let Some(translated) = translated else {
         return Ok(None);
     };
-    let romanized =
-        match first_provider_data(&plugins, &request.chains, "romanize", |plugin| {
+    let romanized = match first_provider_data(
+        &plugins,
+        &request.chains,
+        "romanize",
+        plugin_health,
+        |plugin, change| report_plugin_health(events, plugin, change),
+        |plugin| {
             let plugin = plugin.clone();
             async move {
                 plugin_half(dirs, cache_dir, &plugin, "romanize", &request.target, lines).await
             }
-        })
-        .await
-        {
-            Some(half) => Some(half),
-            None => Some(
-                crate::translate::fetch_romanization_only(http, cache_dir, lines, &request.target)
-                    .await
-                    .map(|found| {
-                        found
-                            .map(|found| half_of(&found, "romanize"))
-                            .unwrap_or_default()
-                    })
-                    .map_err(|error| format!("{error:#}"))?,
-            ),
-        };
+        },
+    )
+    .await
+    {
+        Some(half) => Some(half),
+        None => Some(
+            crate::translate::fetch_romanization_only(http, cache_dir, lines, &request.target)
+                .await
+                .map(|found| {
+                    found
+                        .map(|found| half_of(&found, "romanize"))
+                        .unwrap_or_default()
+                })
+                .map_err(|error| format!("{error:#}"))?,
+        ),
+    };
     Ok(Some(crate::translate::Translation {
         // A cached "the plugin had nothing" is an empty spelling, not a
         // missing half.
@@ -2087,34 +2147,76 @@ async fn translate_lines(
 /// move down the chain, with a note in the log; `None` is the whole chain
 /// coming up empty. The per-plugin ask is a parameter, so tests can stand
 /// in for the sandbox.
-async fn first_provider_data<T, F, Fut>(
+async fn first_provider_data<T, F, Fut, N>(
     plugins: &[crate::plugins::manager::Plugin],
     chains: &crate::settings::ProviderChains,
     kind: &str,
+    plugin_health: &crate::plugins::manager::PluginHealth,
+    mut notify: N,
     mut ask: F,
 ) -> Option<T>
 where
     F: FnMut(&crate::plugins::manager::Plugin) -> Fut,
     Fut: std::future::Future<Output = Result<Option<T>, String>>,
+    N: FnMut(&crate::plugins::manager::Plugin, crate::plugins::manager::PluginHealthChange),
 {
     use crate::plugins::manager;
     let chain = chains.for_kind(kind).clone();
     for plugin in manager::chain_plugins(plugins, &chain, kind) {
+        if !plugin_health.enabled(plugin) {
+            log::debug!(
+                "the plugin {} is disabled after repeated failures; the chain moves on",
+                plugin.id
+            );
+            continue;
+        }
         match ask(plugin).await {
-            Ok(Some(found)) => return Some(found),
+            Ok(Some(found)) => {
+                notify(plugin, plugin_health.success(plugin));
+                return Some(found);
+            }
             Ok(None) => {
+                notify(plugin, plugin_health.success(plugin));
                 log::debug!(
                     "the plugin {} has no {kind} for this; the chain moves on",
                     plugin.id
                 )
             }
-            Err(error) => log::debug!(
-                "the plugin {} failed its {kind} run; the chain moves on: {error}",
-                plugin.id
-            ),
+            Err(error) => {
+                let change = plugin_health.failure(plugin);
+                notify(plugin, change);
+                log::debug!(
+                    "the plugin {} failed its {kind} run; the chain moves on: {error}",
+                    plugin.id
+                );
+            }
         }
     }
     None
+}
+
+fn report_plugin_health(
+    events: &std::sync::mpsc::Sender<Event>,
+    plugin: &crate::plugins::manager::Plugin,
+    change: crate::plugins::manager::PluginHealthChange,
+) {
+    let event = match change {
+        crate::plugins::manager::PluginHealthChange::Disabled(failures) => {
+            Some(Event::PluginDisabled {
+                id: plugin.id.clone(),
+                failures,
+            })
+        }
+        crate::plugins::manager::PluginHealthChange::Recovered => Some(Event::PluginRecovered {
+            id: plugin.id.clone(),
+        }),
+        crate::plugins::manager::PluginHealthChange::None
+        | crate::plugins::manager::PluginHealthChange::Failure(_)
+        | crate::plugins::manager::PluginHealthChange::AlreadyDisabled => None,
+    };
+    if let Some(event) = event {
+        let _ = events.send(event);
+    }
 }
 
 /// One plugin's half of the answer, cached under the plugin's own id. A
@@ -2131,16 +2233,34 @@ async fn plugin_half(
     lines: &[&str],
 ) -> Result<Option<Vec<Option<String>>>, String> {
     use crate::plugins::{host, manager};
-    if let Some(cached) = manager::read_cached(cache_dir, &plugin.id, target, lines) {
+    // Read and verify the module before looking in the cache. The digest and
+    // manifest version are part of the key, and this also catches a file
+    // replaced after the plugin list was loaded.
+    let wasm = manager::wasm_bytes(dirs, plugin)?;
+    if let Some(cached) = manager::read_cached_for(
+        cache_dir,
+        &plugin.id,
+        &plugin.version,
+        &plugin.sha256,
+        target,
+        lines,
+    ) {
         return Ok(cached.map(|found| half_of(&found, kind)));
     }
     let found = async {
-        let wasm = manager::wasm_bytes(dirs, plugin)?;
         let manifest = plugin.manifest();
         host::run_translation(&wasm, &manifest, kind, target, lines).await
     }
     .await?;
-    manager::store_cached(cache_dir, &plugin.id, target, lines, &found);
+    manager::store_cached_for(
+        cache_dir,
+        &plugin.id,
+        &plugin.version,
+        &plugin.sha256,
+        target,
+        lines,
+        &found,
+    );
     Ok(found.map(|found| half_of(&found, kind)))
 }
 
@@ -2152,31 +2272,47 @@ async fn plugin_lyrics(
     dirs: &AppDirs,
     chains: &crate::settings::ProviderChains,
     query: &crate::lyrics::Query,
+    plugin_health: &crate::plugins::manager::PluginHealth,
+    events: &std::sync::mpsc::Sender<Event>,
 ) -> Option<crate::lyrics::Lyrics> {
     use crate::plugins::{host, manager};
-    let plugins = manager::list(dirs);
+    let plugins = manager::list_metadata_cached(dirs);
     let lyrics_cache_dir = dirs.lyrics_cache_dir();
-    first_provider_data(&plugins, chains, "lyrics", |plugin| {
-        let plugin = plugin.clone();
-        let cache_path = manager::lyrics_cache_path(&lyrics_cache_dir, &plugin.id, query);
-        async move {
-            if let Some(cached) = crate::lyrics::cached(&cache_path) {
-                return Ok(cached);
-            }
-            let found = async {
+    first_provider_data(
+        &plugins,
+        chains,
+        "lyrics",
+        plugin_health,
+        |plugin, change| report_plugin_health(events, plugin, change),
+        |plugin| {
+            let plugin = plugin.clone();
+            let lyrics_cache_dir = lyrics_cache_dir.clone();
+            async move {
                 let wasm = manager::wasm_bytes(dirs, &plugin)?;
-                let manifest = plugin.manifest();
-                host::run_lyrics(&wasm, &manifest, query).await
+                let cache_path = manager::lyrics_cache_path_for(
+                    &lyrics_cache_dir,
+                    &plugin.id,
+                    &plugin.version,
+                    &plugin.sha256,
+                    query,
+                );
+                if let Some(cached) = crate::lyrics::cached(&cache_path) {
+                    return Ok(cached);
+                }
+                let found = async {
+                    let manifest = plugin.manifest();
+                    host::run_lyrics(&wasm, &manifest, query).await
+                }
+                .await;
+                // A hit or an honest miss is worth remembering; a failure is
+                // not the cache's business.
+                if let Ok(stored) = &found {
+                    crate::lyrics::store(&cache_path, stored);
+                }
+                found
             }
-            .await;
-            // A hit or an honest miss is worth remembering; a failure is
-            // not the cache's business.
-            if let Ok(stored) = &found {
-                crate::lyrics::store(&cache_path, stored);
-            }
-            found
-        }
-    })
+        },
+    )
     .await
 }
 
@@ -2212,6 +2348,7 @@ mod tests {
             homepage: String::new(),
             capabilities: vec![crate::plugins::PluginManifest::provider_capability(kind)],
             domains: Vec::new(),
+            sha256: String::new(),
         }
     }
 
@@ -2229,16 +2366,24 @@ mod tests {
             provider("deepl", "translate"),
         ];
         let held = chains(&["acme", "deepl"]);
-        let found: Option<String> = first_provider_data(&plugins, &held, "translate", |plugin| {
-            let id = plugin.id.clone();
-            async move {
-                match id.as_str() {
-                    // The first link has nothing for this input.
-                    "acme" => Ok(None),
-                    _ => Ok(Some(format!("data from {id}"))),
+        let health = crate::plugins::manager::PluginHealth::default();
+        let found: Option<String> = first_provider_data(
+            &plugins,
+            &held,
+            "translate",
+            &health,
+            |_, _| {},
+            |plugin| {
+                let id = plugin.id.clone();
+                async move {
+                    match id.as_str() {
+                        // The first link has nothing for this input.
+                        "acme" => Ok(None),
+                        _ => Ok(Some(format!("data from {id}"))),
+                    }
                 }
-            }
-        })
+            },
+        )
         .await;
         assert_eq!(found.unwrap(), "data from deepl");
     }
@@ -2250,18 +2395,99 @@ mod tests {
             provider("deepl", "translate"),
         ];
         let held = chains(&["acme", "deepl"]);
-        let found: Option<String> = first_provider_data(&plugins, &held, "translate", |plugin| {
-            let id = plugin.id.clone();
-            async move {
-                match id.as_str() {
-                    // A trap, a timeout, a refused URL: the same to the walk.
-                    "acme" => Err("the sandbox ran dry".to_string()),
-                    _ => Ok(Some(format!("data from {id}"))),
+        let health = crate::plugins::manager::PluginHealth::default();
+        let found: Option<String> = first_provider_data(
+            &plugins,
+            &held,
+            "translate",
+            &health,
+            |_, _| {},
+            |plugin| {
+                let id = plugin.id.clone();
+                async move {
+                    match id.as_str() {
+                        // A trap, a timeout, a refused URL: the same to the walk.
+                        "acme" => Err("the sandbox ran dry".to_string()),
+                        _ => Ok(Some(format!("data from {id}"))),
+                    }
                 }
-            }
-        })
+            },
+        )
         .await;
         assert_eq!(found.unwrap(), "data from deepl");
+    }
+
+    #[tokio::test]
+    async fn three_failures_disable_a_provider_for_the_session() {
+        let plugins = vec![
+            provider("acme", "translate"),
+            provider("deepl", "translate"),
+        ];
+        let held = chains(&["acme", "deepl"]);
+        let health = crate::plugins::manager::PluginHealth::default();
+        let acme_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut disabled_notifications = 0;
+        for _ in 0..3 {
+            let calls = Arc::clone(&acme_calls);
+            let found: Option<String> = first_provider_data(
+                &plugins,
+                &held,
+                "translate",
+                &health,
+                |plugin, change| {
+                    if plugin.id == "acme"
+                        && matches!(
+                            change,
+                            crate::plugins::manager::PluginHealthChange::Disabled(_)
+                        )
+                    {
+                        disabled_notifications += 1;
+                    }
+                },
+                |plugin| {
+                    let id = plugin.id.clone();
+                    let calls = Arc::clone(&calls);
+                    async move {
+                        if id == "acme" {
+                            calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            Err("upstream is down".into())
+                        } else {
+                            Ok(Some("fallback".into()))
+                        }
+                    }
+                },
+            )
+            .await;
+            assert_eq!(found.as_deref(), Some("fallback"));
+        }
+        assert_eq!(acme_calls.load(std::sync::atomic::Ordering::Relaxed), 3);
+        assert_eq!(disabled_notifications, 1);
+
+        // The disabled plugin is skipped without invoking its callback or
+        // counting another failure; the next provider remains deterministic.
+        let calls = Arc::clone(&acme_calls);
+        let found: Option<String> = first_provider_data(
+            &plugins,
+            &held,
+            "translate",
+            &health,
+            |_, _| {},
+            |plugin| {
+                let id = plugin.id.clone();
+                let calls = Arc::clone(&calls);
+                async move {
+                    if id == "acme" {
+                        calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        Err("must not run".into())
+                    } else {
+                        Ok(Some("fallback".into()))
+                    }
+                }
+            },
+        )
+        .await;
+        assert_eq!(found.as_deref(), Some("fallback"));
+        assert_eq!(acme_calls.load(std::sync::atomic::Ordering::Relaxed), 3);
     }
 
     #[tokio::test]
@@ -2271,15 +2497,23 @@ mod tests {
             provider("deepl", "translate"),
         ];
         let held = chains(&["acme", "deepl"]);
-        let found: Option<String> = first_provider_data(&plugins, &held, "translate", |plugin| {
-            let id = plugin.id.clone();
-            async move {
-                match id.as_str() {
-                    "acme" => Ok(None),
-                    _ => Err("broken".to_string()),
+        let health = crate::plugins::manager::PluginHealth::default();
+        let found: Option<String> = first_provider_data(
+            &plugins,
+            &held,
+            "translate",
+            &health,
+            |_, _| {},
+            |plugin| {
+                let id = plugin.id.clone();
+                async move {
+                    match id.as_str() {
+                        "acme" => Ok(None),
+                        _ => Err("broken".to_string()),
+                    }
                 }
-            }
-        })
+            },
+        )
         .await;
         assert_eq!(found, None);
     }
@@ -2294,15 +2528,23 @@ mod tests {
             &plugins,
             &crate::settings::ProviderChains::default(),
             "translate",
+            &crate::plugins::manager::PluginHealth::default(),
+            |_, _| {},
             |_| async { Ok(Some("data".to_string())) },
         )
         .await;
         assert_eq!(found, None);
         // With the plugin seated, the same walk asks it first.
         let held = chains(&["acme"]);
-        let found = first_provider_data(&plugins, &held, "translate", |_| async {
-            Ok(Some("data".to_string()))
-        })
+        let health = crate::plugins::manager::PluginHealth::default();
+        let found = first_provider_data(
+            &plugins,
+            &held,
+            "translate",
+            &health,
+            |_, _| {},
+            |_| async { Ok(Some("data".to_string())) },
+        )
         .await;
         assert_eq!(found.unwrap(), "data");
     }

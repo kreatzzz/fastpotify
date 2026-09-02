@@ -71,6 +71,100 @@ jobs:
       - name: Documentation tests
         run: cargo test --locked --all-features --doc
 
+  # Plugins are independent crates rather than members of the host package.
+  # Build their wasm modules explicitly so a host-only green build cannot hide
+  # an ABI or standalone-workspace regression.
+  plugin:
+    name: plugin (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: sdk
+            manifest: plugins/sdk/Cargo.toml
+            features: harness
+            wasm: false
+          - name: translate
+            manifest: plugins/translate/Cargo.toml
+            features: ''
+            wasm: true
+          - name: romanize
+            manifest: plugins/romanize/Cargo.toml
+            features: ''
+            wasm: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Add wasm target
+        if: matrix.wasm == true
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: plugin-${{ matrix.name }}
+      - name: Build plugin module
+        if: matrix.wasm == true
+        shell: bash
+        run: |
+          cargo build --locked --release --target wasm32-unknown-unknown \
+            --manifest-path "${{ matrix.manifest }}"
+          module_dir="$(dirname "${{ matrix.manifest }}")/target/wasm32-unknown-unknown/release"
+          # The crate name uses hyphens in Cargo and underscores in wasm.
+          case "${{ matrix.name }}" in
+            translate) module="$module_dir/woofer_plugin_translate.wasm" ;;
+            romanize) module="$module_dir/woofer_plugin_romanize.wasm" ;;
+          esac
+          test -s "$module"
+          # The integration harness loads this exact release artifact in the
+          # next step, rather than silently rebuilding or testing another file.
+          echo "PLUGIN_WASM=$GITHUB_WORKSPACE/$module" >> "$GITHUB_ENV"
+      - name: Test standalone crate and ABI harness
+        shell: bash
+        run: |
+          if [[ -n "${{ matrix.features }}" ]]; then
+            cargo test --locked --manifest-path "${{ matrix.manifest }}" \
+              --all-targets --features "${{ matrix.features }}"
+          else
+            # The crate's harness tests load PLUGIN_WASM with the SDK's wasmi
+            # interpreter. Plugin::from_bytes resolves memory, alloc,
+            # dealloc, abi_version, manifest, plan, and fulfil, then exercises
+            # the ABI calls and manifest on the built module.
+            cargo test --locked --manifest-path "${{ matrix.manifest }}" --all-targets
+          fi
+
+  packaging:
+    name: packaging smoke tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Exercise archive and checksum helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          for script in packaging/release/*.sh packaging/linux/*.sh; do bash -n "$script"; done
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          mkdir -p "$tmp/one" "$tmp/two"
+          SOURCE_DATE_EPOCH=0 bash packaging/release/archive.sh \
+            --binary /usr/bin/true --name woofer-v0.0.0-x86_64-unknown-linux-gnu \
+            --format tar.gz --platform linux --output-dir "$tmp/one"
+          SOURCE_DATE_EPOCH=0 bash packaging/release/archive.sh \
+            --binary /usr/bin/true --name woofer-v0.0.0-x86_64-pc-windows-msvc \
+            --format zip --platform windows --output-dir "$tmp/one"
+          SOURCE_DATE_EPOCH=0 bash packaging/release/archive.sh \
+            --binary /usr/bin/true --name woofer-v0.0.0-x86_64-unknown-linux-gnu \
+            --format tar.gz --platform linux --output-dir "$tmp/two"
+          cmp "$tmp/one/woofer-v0.0.0-x86_64-unknown-linux-gnu.tar.gz" \
+            "$tmp/two/woofer-v0.0.0-x86_64-unknown-linux-gnu.tar.gz"
+          tar -tzf "$tmp/one/woofer-v0.0.0-x86_64-unknown-linux-gnu.tar.gz" | grep -q '/woofer$'
+          unzip -t "$tmp/one/woofer-v0.0.0-x86_64-pc-windows-msvc.zip" >/dev/null
+          bash packaging/release/checksums.sh "$tmp/one"
+          (cd "$tmp/one" && sha256sum -c checksums.txt)
+
   docs:
     name: docs
     runs-on: ubuntu-latest
@@ -78,15 +172,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ruby/setup-ruby@v1
+      - uses: actions/setup-node@v4
         with:
-          ruby-version: '4.0'
-          bundler-cache: true
-          working-directory: docs
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
 
+      - name: Install documentation dependencies
+        working-directory: docs
+        run: npm ci
       - name: Build documentation site
         working-directory: docs
-        env:
-          JEKYLL_ENV: production
-        run: |
-          bundle exec jekyll build --destination "$RUNNER_TEMP/fastpotify-site"
+        run: npm run build

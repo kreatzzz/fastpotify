@@ -1,3 +1,8 @@
+---
+title: Decisions log
+description: The dated decisions behind Woofer's fork, playback, plugin catalog, and release process.
+---
+
 # Decisions log
 
 Every decision worth remembering, newest last. Dates are 2026.
@@ -23,9 +28,10 @@ The playback grant still uses Spotify's own desktop identity
 (`PLAYBACK_CLIENT_ID`) — that one is not ours to replace. The Settings
 override stays.
 
-**macOS ships unsigned** until the user buys an Apple Developer
-subscription; the release workflow handles both (secrets absent → unsigned
-DMG; users right-click → Open).
+**macOS defaults to unsigned** until Apple signing and notarization
+credentials are configured; the release workflow handles both paths (the
+complete secret set enables signing, otherwise the DMG is ad-hoc and users
+right-click → Open).
 
 **Upstream policy**: weekly fetch, cherry-pick fixes, keep sending small
 fixes upstream. Never merge wholesale: upstream `main` does not compile
@@ -67,11 +73,12 @@ four arguments (input + responses buffers); strings packed as
 `(ptr << 32) | len`; JSON payloads. Host limits: fuel 200M per run, 64 MB
 memory, 5 MB per response, wall-clock backstop.
 
-**Bundled plugins**: Translate and Romanize ship inside the binary
-(`include_bytes!` from `assets/plugins/*.wasm`, committed build artifacts)
-and are disable-able, so a fresh install works with zero setup. Their
-sidecar manifests in `src/plugins/mod.rs` must match each module's own
-`manifest()` — a test enforces it.
+**Catalog plugins**: Translate and Romanize are published in the Woofer
+catalog and installed separately (`woofer://install?plugin=translate` and
+`…plugin=romanize`). The app ships no plugin modules: a fresh install is still
+fully useful because the built-in engines answer when a provider is absent.
+The plugin crates' own manifests are validated by their harnesses, and the
+host re-verifies each installed module against its catalog digest.
 
 **Arities over conflict resolution**: data capabilities are single-active
 and user-arbitrated (never a silent swap); commands and panels are
@@ -81,12 +88,12 @@ v1.5 `panel` vocabulary is drafted in `docs/plugins.md` §6. Plugins
 cannot call each other in v1.
 
 **The catalog is approval-only and is a website, not an app surface**:
-`kreatzzz/woofer-plugins` (git) → static site on Vercel at
-**usewoofer.com** (domain bought Aug 29; DNS: apex A `76.76.21.21`, `www`
-CNAME `cname.vercel-dns.com`). A PR merge is the review; `registry.json`
-carries sha256-pinned wasm. In-app: the Plugins page (top-bar puzzle
-icon) installs from URL or drag-and-drop, enables/disables, deletes,
-visits source — no in-app browsing.
+`kreatzzz/woofer-plugins` (git) → a planned static site on Vercel at
+**usewoofer.com**. The domain is owned, but deployment and DNS still need to
+be completed. A PR merge is the review; `registry.json` carries
+sha256-pinned wasm. In-app: the Plugins page (top-bar puzzle icon) installs
+from URL or drag-and-drop, enables/disables, deletes, visits source — no
+in-app browsing.
 
 **Fallbacks**: plugin fails or is disabled → the built-in translator
 (keyless Google) → Lingva (translation only). The app is fully functional
@@ -98,5 +105,5 @@ with zero plugins.
 The release workflow builds Linux x64+arm64 tarballs, Windows x64+arm64
 (zip + Inno Setup installer), a macOS universal DMG, and checksums, on a
 `v*` tag. See `docs/dev/release-plan.md` for the full runbook — currently
-**halted at the user's request** (the `v0.3.0` tag was pushed and deleted
-before anything built).
+**halted at the user's request**. The working tree is version `0.4.0`, but no
+public release exists yet.

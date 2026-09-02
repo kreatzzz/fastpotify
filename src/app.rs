@@ -1,6 +1,7 @@
 //! The application: state, event handling, and the actions views ask for.
 
 use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::time::{Duration, Instant};
 
 use egui::Color32;
@@ -72,7 +73,19 @@ enum PendingPluginInstall {
     /// with its buttons swapped for a spinner until the answer lands.
     Downloading {
         offer: Dialog,
+        /// The catalog metadata the user confirmed, when this is a deep
+        /// link install. Direct URL/drop installs have no catalog offer.
+        expected: Option<crate::plugins::catalog::CatalogEntry>,
         receiver: std::sync::mpsc::Receiver<Result<Vec<u8>, String>>,
+    },
+    /// The catalog hash was verified and the bytes are being validated and
+    /// published by the worker. Keeping the offer here leaves the dialog
+    /// busy until the pair is safely on disk.
+    Installing {
+        offer: Dialog,
+        /// The catalog metadata to compare with the module before publish.
+        expected: Option<crate::plugins::catalog::CatalogEntry>,
+        receiver: std::sync::mpsc::Receiver<Result<crate::plugins::manager::Plugin, String>>,
     },
 }
 
@@ -204,6 +217,10 @@ pub struct App {
     track_requests: HashSet<String>,
     /// Installed plugins, refreshed at startup and after every change.
     pub plugins: Vec<crate::plugins::manager::Plugin>,
+    /// Plugins disabled for this session after repeated provider failures.
+    /// The backend emits the transition; keeping it in App makes the status
+    /// available to the page as well as the toast.
+    pub disabled_plugins: HashSet<String>,
 
     pub history: Vec<Page>,
     pub history_index: usize,
@@ -244,11 +261,18 @@ pub struct App {
     /// starts the moment the engine reports ready.
     queued_play: Option<PlayRequest>,
     /// A plugin download from a URL, in flight on a thread; its receiver
-    /// is polled every frame in tick().
-    pending_install: Option<std::sync::mpsc::Receiver<Result<Vec<u8>, String>>>,
+    /// is polled every frame in tick(). Installation itself also runs on the
+    /// worker, so validation and disk writes never hold the UI frame.
+    pending_install: Vec<(
+        String,
+        std::sync::mpsc::Receiver<Result<crate::plugins::manager::Plugin, String>>,
+    )>,
     /// A `woofer://install` link in flight, or a confirmed offer
     /// downloading. Polled every frame in tick() beside `pending_install`.
     pending_deep_link: Option<PendingPluginInstall>,
+    /// Metadata shown by the current catalog confirmation dialog. Kept out
+    /// of [`Dialog`] so ordinary/demo dialogs need no catalog-only fields.
+    pending_catalog_offer: Option<crate::plugins::catalog::CatalogEntry>,
     /// A receiver just activated, waiting for Spotify to list it so playback
     /// can move there.
     pending_transfer_to: Option<(String, Instant)>,
@@ -433,6 +457,7 @@ impl App {
             track_cache: HashMap::new(),
             track_requests: HashSet::new(),
             plugins: Vec::new(),
+            disabled_plugins: HashSet::new(),
             history: vec![first_page],
             history_index: 0,
             saved: HashMap::new(),
@@ -456,8 +481,9 @@ impl App {
             pending_play_keys: Vec::new(),
             pending_play_at: None,
             queued_play: None,
-            pending_install: None,
+            pending_install: Vec::new(),
             pending_deep_link: None,
+            pending_catalog_offer: None,
             pending_transfer_to: None,
             remote_recheck_at: None,
             seek_preview: None,
@@ -952,6 +978,18 @@ impl App {
                             Ok(found) => Loadable::Loaded(found),
                             Err(error) => Loadable::Failed(error),
                         };
+                    }
+                }
+                Event::PluginDisabled { id, failures } => {
+                    if self.disabled_plugins.insert(id.clone()) {
+                        self.toast_error(format!(
+                            "Plugin {id} disabled after {failures} consecutive failures"
+                        ));
+                    }
+                }
+                Event::PluginRecovered { id } => {
+                    if self.disabled_plugins.remove(&id) {
+                        self.toast(format!("Plugin {id} recovered"));
                     }
                 }
                 Event::PlaylistCache {
@@ -2997,19 +3035,38 @@ impl App {
     // ---- plugins ---------------------------------------------------------------
 
     /// Rereads the plugin list from disk; called at startup and after
-    /// every change.
+    /// every change. Metadata loading never instantiates wasm on the UI
+    /// thread; the selected module is validated on its worker before a run.
     fn refresh_plugins(&mut self) {
-        self.plugins = crate::plugins::manager::list(&self.dirs);
+        self.plugins = crate::plugins::manager::list_metadata_cached(&self.dirs);
     }
 
     /// Writes a plugin's wasm to disk. The caller toasts the outcome.
-    /// The manager's async install wants a runtime the interface thread
-    /// does not have, so this goes through its synchronous form; a
-    /// plugin is small and validating it costs a moment, not a frame.
+    /// This synchronous entry point remains useful to tests and callers that
+    /// already run away from the UI. User-facing downloads and dropped files
+    /// use [`queue_plugin_install`] so validation and disk writes do not hold
+    /// an egui frame.
     /// Installing never displaces: the new provider takes the back of
     /// every chain it can answer for.
     pub fn install_plugin_bytes(&mut self, wasm: &[u8]) -> Result<String, String> {
         let installed = crate::plugins::manager::install_blocking(&self.dirs, wasm)?;
+        let name = installed.name.clone();
+        self.adopt_installed_plugin(installed);
+        Ok(name)
+    }
+
+    /// Adds an installed provider to the back of every kind it serves and
+    /// refreshes the visible list. This is the one UI-thread step after a
+    /// worker has finished its potentially blocking install.
+    fn adopt_installed_plugin(&mut self, installed: crate::plugins::manager::Plugin) {
+        // A successful reinstall is an explicit recovery action. Clear the
+        // backend's session-local failure state for this exact module before
+        // it can be selected from the refreshed provider chain again.
+        self.backend.send(Command::ResetPluginHealth {
+            id: installed.id.clone(),
+            sha256: installed.sha256.clone(),
+        });
+        self.disabled_plugins.remove(&installed.id);
         for kind in installed.provider_kinds() {
             let chain = self.settings.provider_chains.for_kind_mut(kind);
             if !chain.iter().any(|held| held == &installed.id) {
@@ -3018,71 +3075,79 @@ impl App {
         }
         self.settings_dirty = true;
         self.refresh_plugins();
-        Ok(installed.name)
     }
 
     pub fn remove_plugin(&mut self, id: &str) {
         crate::plugins::manager::remove(&self.dirs, id);
+        self.settings.provider_chains.drop_id(id);
+        self.disabled_plugins.remove(id);
+        self.settings_dirty = true;
         self.refresh_plugins();
     }
 
-    /// Starts a plugin download from a URL on a thread. The interface
-    /// never waits on the network; the answer lands in `pending_install`
-    /// and tick() toasts the outcome when it arrives.
-    fn begin_plugin_install(&mut self, url: String) {
+    /// Validates and publishes a wasm on a worker. The receiver is kept
+    /// separate for catalog offers, whose dialog has its own state machine.
+    fn spawn_plugin_install(
+        dirs: AppDirs,
+        wasm: Vec<u8>,
+        expected: Option<crate::plugins::catalog::CatalogEntry>,
+    ) -> std::sync::mpsc::Receiver<Result<crate::plugins::manager::Plugin, String>> {
         let (sender, receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let result = fetch_plugin_wasm(&url);
+            let result = (|| {
+                if let Some(entry) = expected.as_ref() {
+                    let manifest = crate::plugins::host::validate(&wasm)?;
+                    crate::plugins::catalog::manifest_matches(entry, &manifest)?;
+                }
+                crate::plugins::manager::install_blocking(&dirs, &wasm)
+            })();
             let _ = sender.send(result);
         });
-        self.pending_install = Some(receiver);
+        receiver
+    }
+
+    /// Starts a plugin download from a URL on a thread. The interface
+    /// never waits on the network or disk; the verified install lands in
+    /// `pending_install` and tick() toasts the outcome when it arrives.
+    fn begin_plugin_install(&mut self, url: String) {
+        self.toast("Downloading plugin…");
+        let label = url.clone();
+        let dirs = self.dirs.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = fetch_plugin_wasm(&url)
+                .and_then(|bytes| crate::plugins::manager::install_blocking(&dirs, &bytes));
+            let _ = sender.send(result);
+        });
+        self.pending_install.push((label, receiver));
     }
 
     /// The download started by [`App::begin_plugin_install`], if any. A
     /// missing answer just asks for another frame; a finished one is
     /// installed here, where toasting the result costs nothing.
     fn poll_plugin_install(&mut self, ctx: &egui::Context) {
-        let received = self
-            .pending_install
-            .as_ref()
-            .map(|receiver| receiver.try_recv());
-        match received {
-            Some(Ok(Ok(bytes))) => {
-                self.pending_install = None;
-                match self.install_plugin_bytes(&bytes) {
-                    Ok(installed) => {
-                        self.toast(format!("Installed {}", self.plugin_name(&installed)));
-                    }
-                    Err(error) => {
-                        self.toast_error(format!("Couldn't install the plugin: {error}"));
-                    }
+        let pending = std::mem::take(&mut self.pending_install);
+        for (label, receiver) in pending {
+            match receiver.try_recv() {
+                Ok(Ok(installed)) => {
+                    let name = installed.name.clone();
+                    self.adopt_installed_plugin(installed);
+                    self.toast(format!("Installed {name}"));
                 }
-            }
-            Some(Ok(Err(error))) => {
-                self.pending_install = None;
-                self.toast_error(format!("Couldn't download the plugin: {error}"));
-            }
-            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
-                // The thread died before answering; nothing to wait for.
-                self.pending_install = None;
-            }
-            _ => {
-                if self.pending_install.is_some() {
-                    ctx.request_repaint_after(Duration::from_millis(120));
+                Ok(Err(error)) => {
+                    self.toast_error(format!("Couldn't install {label}: {error}"));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    self.pending_install.push((label, receiver));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.toast_error(format!("Couldn't install {label}: worker stopped"));
                 }
             }
         }
-    }
-
-    /// The display name for a freshly installed plugin, looked up in the
-    /// reread list; the string install answered with stands in when the
-    /// entry cannot be found.
-    fn plugin_name(&self, installed: &str) -> String {
-        self.plugins
-            .iter()
-            .find(|plugin| plugin.id == installed || plugin.name == installed)
-            .map(|plugin| plugin.name.clone())
-            .unwrap_or_else(|| installed.to_string())
+        if !self.pending_install.is_empty() {
+            ctx.request_repaint_after(Duration::from_millis(120));
+        }
     }
 
     /// Whether the plugin offer's Install button is waiting on the wasm
@@ -3090,7 +3155,9 @@ impl App {
     pub fn plugin_offer_downloading(&self) -> bool {
         matches!(
             self.pending_deep_link,
-            Some(PendingPluginInstall::Downloading { .. })
+            Some(
+                PendingPluginInstall::Downloading { .. } | PendingPluginInstall::Installing { .. }
+            )
         )
     }
 
@@ -3100,6 +3167,14 @@ impl App {
     /// when it answers. Starting one is announced with a toast, because
     /// a slow catalog otherwise looks like a link that did nothing.
     fn begin_deep_link_install(&mut self, url: String) {
+        // Keep the receiver for the first link: replacing an in-flight state
+        // would orphan its worker and let it publish without a visible
+        // install to follow. A second launch can try again after this one
+        // resolves, downloads, or installs.
+        if self.pending_deep_link.is_some() {
+            self.toast("A plugin install is already in progress");
+            return;
+        }
         log::info!("resolving {url}");
         self.toast("Resolving plugin…");
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -3121,7 +3196,9 @@ impl App {
         // A second click while the download runs changes nothing.
         if matches!(
             self.pending_deep_link,
-            Some(PendingPluginInstall::Downloading { .. })
+            Some(
+                PendingPluginInstall::Downloading { .. } | PendingPluginInstall::Installing { .. }
+            )
         ) {
             return;
         }
@@ -3138,7 +3215,11 @@ impl App {
             let result = fetch_plugin_wasm(&wasm_url);
             let _ = sender.send(result);
         });
-        self.pending_deep_link = Some(PendingPluginInstall::Downloading { offer, receiver });
+        self.pending_deep_link = Some(PendingPluginInstall::Downloading {
+            offer,
+            expected: self.pending_catalog_offer.clone(),
+            receiver,
+        });
     }
 
     /// The deep-link install's worker thread, if one is out. A missing
@@ -3162,30 +3243,74 @@ impl App {
                         wasm_url: entry.wasm.clone(),
                         sha256: entry.sha256.clone(),
                     });
+                    self.pending_catalog_offer = Some(entry);
                 }
-                Ok(Err(error)) => self.toast_error(format!("Couldn't resolve the plugin: {error}")),
+                Ok(Err(error)) => {
+                    self.pending_catalog_offer = None;
+                    self.toast_error(format!("Couldn't resolve the plugin: {error}"));
+                }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
                     self.pending_deep_link = Some(PendingPluginInstall::Resolving { receiver });
                     ctx.request_repaint_after(Duration::from_millis(120));
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.pending_catalog_offer = None;
                     self.toast_error("The plugin lookup died before answering");
                 }
             },
-            PendingPluginInstall::Downloading { offer, receiver } => match receiver.try_recv() {
-                Ok(Ok(bytes)) => self.finish_plugin_offer(offer, &bytes),
+            PendingPluginInstall::Downloading {
+                offer,
+                expected,
+                receiver,
+            } => match receiver.try_recv() {
+                Ok(Ok(bytes)) => self.finish_plugin_offer(offer, expected, bytes),
                 Ok(Err(error)) => {
+                    self.pending_catalog_offer = None;
                     self.toast_error(format!("Couldn't download the plugin: {error}"));
                     self.dialog = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    self.pending_deep_link =
-                        Some(PendingPluginInstall::Downloading { offer, receiver });
+                    self.pending_deep_link = Some(PendingPluginInstall::Downloading {
+                        offer,
+                        expected,
+                        receiver,
+                    });
                     ctx.request_repaint_after(Duration::from_millis(120));
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.pending_catalog_offer = None;
                     self.toast_error("The plugin download died before answering");
                     self.dialog = None;
+                }
+            },
+            PendingPluginInstall::Installing {
+                offer,
+                expected,
+                receiver,
+            } => match receiver.try_recv() {
+                Ok(Ok(installed)) => {
+                    let name = installed.name.clone();
+                    self.adopt_installed_plugin(installed);
+                    self.dialog = None;
+                    self.toast(format!("Installed {name}"));
+                }
+                Ok(Err(error)) => {
+                    self.pending_catalog_offer = None;
+                    self.dialog = None;
+                    self.toast_error(format!("Couldn't install the plugin: {error}"));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    self.pending_deep_link = Some(PendingPluginInstall::Installing {
+                        offer,
+                        expected,
+                        receiver,
+                    });
+                    ctx.request_repaint_after(Duration::from_millis(120));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.pending_catalog_offer = None;
+                    self.dialog = None;
+                    self.toast_error("The plugin install worker stopped before answering");
                 }
             },
         }
@@ -3195,28 +3320,32 @@ impl App {
     /// what the catalog published before they are written anywhere. The
     /// offer's name is what the user agreed to, so that is what the
     /// toasts say.
-    fn finish_plugin_offer(&mut self, offer: Dialog, bytes: &[u8]) {
-        self.pending_deep_link = None;
+    fn finish_plugin_offer(
+        &mut self,
+        offer: Dialog,
+        expected: Option<crate::plugins::catalog::CatalogEntry>,
+        bytes: Vec<u8>,
+    ) {
         let Dialog::ConfirmInstall { name, sha256, .. } = &offer else {
             return;
         };
-        if !crate::plugins::catalog::matches_sha256(bytes, sha256) {
+        if !crate::plugins::catalog::matches_sha256(&bytes, sha256) {
+            self.pending_catalog_offer = None;
             self.toast_error(format!(
                 "“{name}” does not match the hash the catalog published; not installing it"
             ));
             self.dialog = None;
             return;
         }
-        match self.install_plugin_bytes(bytes) {
-            Ok(installed) => {
-                self.toast(format!("Installed {}", self.plugin_name(&installed)));
-                self.dialog = None;
-            }
-            Err(error) => {
-                self.toast_error(format!("Couldn't install the plugin: {error}"));
-                self.dialog = None;
-            }
-        }
+        let name = name.clone();
+        self.pending_catalog_offer = None;
+        let receiver = Self::spawn_plugin_install(self.dirs.clone(), bytes, expected.clone());
+        self.pending_deep_link = Some(PendingPluginInstall::Installing {
+            offer,
+            expected,
+            receiver,
+        });
+        self.toast(format!("Installing {name}…"));
     }
 
     /// A .wasm file dropped onto the window installs itself; anything
@@ -3232,15 +3361,19 @@ impl App {
                 .file_name()
                 .map(|name| name.to_string_lossy().to_string())
                 .unwrap_or_else(|| "plugin".into());
-            match std::fs::read(&path) {
-                Ok(bytes) => match self.install_plugin_bytes(&bytes) {
-                    Ok(installed) => {
-                        self.toast(format!("Installed {}", self.plugin_name(&installed)));
-                    }
-                    Err(error) => self.toast_error(format!("Couldn't install {name}: {error}")),
-                },
-                Err(error) => self.toast_error(format!("Couldn't read {name}: {error}")),
-            }
+            let dirs = self.dirs.clone();
+            let label = name.clone();
+            let (sender, receiver) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let result = std::fs::read(&path)
+                    .map_err(|error| format!("couldn't read {label}: {error}"))
+                    .and_then(|bytes| crate::plugins::manager::install_blocking(&dirs, &bytes));
+                let _ = sender.send(result);
+            });
+            self.pending_install.push((name, receiver));
+        }
+        if !self.pending_install.is_empty() {
+            ctx.request_repaint_after(Duration::from_millis(120));
         }
     }
 
@@ -3991,15 +4124,28 @@ impl App {
             }
             Action::ShowDialog(dialog) => self.dialog = Some(dialog),
             Action::CloseDialog => {
+                // Once the worker has begun publishing the pair, keep its
+                // receiver until it reports. Dropping it here would let the
+                // worker finish a write the UI no longer tracks.
+                if matches!(
+                    self.pending_deep_link,
+                    Some(PendingPluginInstall::Installing { .. })
+                ) {
+                    return;
+                }
                 self.dialog = None;
                 // Closing the offer cancels it. A lookup still running on
                 // its own keeps going and toasts its answer.
                 if matches!(
                     self.pending_deep_link,
-                    Some(PendingPluginInstall::Downloading { .. })
+                    Some(
+                        PendingPluginInstall::Downloading { .. }
+                            | PendingPluginInstall::Installing { .. }
+                    )
                 ) {
                     self.pending_deep_link = None;
                 }
+                self.pending_catalog_offer = None;
             }
             Action::CreatePlaylist {
                 name,
@@ -4210,10 +4356,17 @@ impl App {
             Action::ResolvePluginLink(url) => self.begin_deep_link_install(url),
             Action::ConfirmPluginInstall => self.confirm_plugin_install(),
             Action::CancelPluginInstall => {
+                if matches!(
+                    self.pending_deep_link,
+                    Some(PendingPluginInstall::Installing { .. })
+                ) {
+                    return;
+                }
                 // The offer comes down with the dialog; a download already
                 // running is abandoned with it.
                 self.dialog = None;
                 self.pending_deep_link = None;
+                self.pending_catalog_offer = None;
             }
             Action::ClearArtCache => match self.backend.art().clear_disk_cache() {
                 Ok(bytes) => {
@@ -4663,9 +4816,16 @@ fn friendly_page_error(error: &crate::api::ApiError) -> String {
 /// interface never waits on the network. The app keeps no blocking
 /// client of its own; an install is rare enough to build one for.
 fn fetch_plugin_wasm(url: &str) -> Result<Vec<u8>, String> {
+    const MAX_PLUGIN_DOWNLOAD: usize = 64 * 1024 * 1024;
+    let parsed =
+        reqwest::Url::parse(url).map_err(|error| format!("invalid plugin URL: {error}"))?;
+    if parsed.scheme() != "https" || parsed.username() != "" || parsed.password().is_some() {
+        return Err("plugin downloads must use an HTTPS URL without credentials".to_string());
+    }
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(60))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| error.to_string())?;
     let response = client
@@ -4673,10 +4833,31 @@ fn fetch_plugin_wasm(url: &str) -> Result<Vec<u8>, String> {
         .send()
         .and_then(|response| response.error_for_status())
         .map_err(|error| error.to_string())?;
-    Ok(response
-        .bytes()
-        .map_err(|error| error.to_string())?
-        .to_vec())
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_PLUGIN_DOWNLOAD as u64)
+    {
+        return Err(format!(
+            "plugin download exceeds the {MAX_PLUGIN_DOWNLOAD}-byte limit"
+        ));
+    }
+    let mut bytes = Vec::with_capacity(
+        response
+            .content_length()
+            .and_then(|length| usize::try_from(length).ok())
+            .unwrap_or(64 * 1024)
+            .min(MAX_PLUGIN_DOWNLOAD),
+    );
+    response
+        .take((MAX_PLUGIN_DOWNLOAD + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > MAX_PLUGIN_DOWNLOAD {
+        return Err(format!(
+            "plugin download exceeds the {MAX_PLUGIN_DOWNLOAD}-byte limit"
+        ));
+    }
+    Ok(bytes)
 }
 
 /// Spotify balks at gigantic track lists, so a play that starts deep in
@@ -5175,6 +5356,36 @@ mod tests {
         assert_eq!(sha256, "a".repeat(64));
     }
 
+    #[test]
+    fn a_second_deep_link_does_not_displace_an_install_in_progress() {
+        let mut app = headless_app();
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        app.pending_deep_link = Some(PendingPluginInstall::Downloading {
+            offer: Dialog::ConfirmInstall {
+                name: "Translate".into(),
+                publisher: "kreatzzz".into(),
+                version: "1.0.0".into(),
+                domains: vec!["clients5.google.com".into()],
+                wasm_url: "https://usewoofer.com/plugins/translate/plugin.wasm".into(),
+                sha256: "a".repeat(64),
+            },
+            expected: None,
+            receiver,
+        });
+
+        app.begin_deep_link_install("woofer://install?plugin=romanize".into());
+
+        assert!(matches!(
+            app.pending_deep_link,
+            Some(PendingPluginInstall::Downloading { .. })
+        ));
+        assert!(
+            app.toasts
+                .iter()
+                .any(|toast| toast.message == "A plugin install is already in progress")
+        );
+    }
+
     /// The trust contract is enforced, not displayed: bytes that do not
     /// hash to what the catalog published are never written anywhere.
     #[test]
@@ -5192,6 +5403,7 @@ mod tests {
                 wasm_url: "https://usewoofer.com/plugins/translate.wasm".into(),
                 sha256: "a".repeat(64),
             },
+            expected: None,
             receiver,
         });
 
@@ -5235,11 +5447,19 @@ mod tests {
                 wasm_url: "https://usewoofer.com/plugins/translate/plugin.wasm".into(),
                 sha256,
             },
+            expected: None,
             receiver,
         });
 
         // #when
         app.poll_deep_link(&egui::Context::default());
+        for _ in 0..100 {
+            if app.pending_deep_link.is_none() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+            app.poll_deep_link(&egui::Context::default());
+        }
 
         // #then
         assert!(app.dialog.is_none());
@@ -5247,6 +5467,63 @@ mod tests {
             app.toasts
                 .iter()
                 .any(|toast| toast.message.starts_with("Couldn't install the plugin")),
+            "{:?}",
+            app.toasts
+        );
+    }
+
+    #[test]
+    fn a_catalog_offer_rejects_a_module_manifest_mismatch() {
+        let Some(wasm) = std::fs::read(
+            "plugins/translate/target/wasm32-unknown-unknown/release/woofer_plugin_translate.wasm",
+        )
+        .ok() else {
+            return;
+        };
+        let declared = crate::plugins::host::validate(&wasm).expect("the built plugin loads");
+        let digest = crate::plugins::manager::sha256(&wasm);
+        let expected = crate::plugins::catalog::CatalogEntry {
+            id: declared.id.clone(),
+            name: declared.name.clone(),
+            // The catalog's publisher is deliberately different from the
+            // module, so the worker must refuse before any pair is written.
+            publisher: "someone-else".into(),
+            version: declared.version.clone(),
+            capabilities: declared.capabilities.clone(),
+            domains: declared.domains.clone(),
+            homepage: declared.homepage.clone(),
+            wasm: "https://usewoofer.com/plugins/translate/plugin.wasm".into(),
+            size: wasm.len() as u64,
+            sha256: digest,
+        };
+        let mut app = headless_app();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let _ = sender.send(Ok(wasm));
+        app.pending_deep_link = Some(PendingPluginInstall::Downloading {
+            offer: Dialog::ConfirmInstall {
+                name: declared.name,
+                publisher: expected.publisher.clone(),
+                version: expected.version.clone(),
+                domains: expected.domains.clone(),
+                wasm_url: expected.wasm.clone(),
+                sha256: expected.sha256.clone(),
+            },
+            expected: Some(expected),
+            receiver,
+        });
+        app.poll_deep_link(&egui::Context::default());
+        for _ in 0..100 {
+            if app.pending_deep_link.is_none() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+            app.poll_deep_link(&egui::Context::default());
+        }
+        assert!(app.dialog.is_none());
+        assert!(
+            app.toasts.iter().any(|toast| toast
+                .message
+                .contains("manifest disagrees with the catalog publisher")),
             "{:?}",
             app.toasts
         );

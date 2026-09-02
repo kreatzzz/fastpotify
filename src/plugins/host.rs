@@ -9,33 +9,48 @@
 //! this plugin failed this run.
 
 use std::collections::HashMap;
+use std::io::Read;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use wasmi::{Config, Engine, Module};
 
 use crate::plugins::{ABI_VERSION, PROVIDER_CAPABILITY, PluginManifest};
 use crate::translate::Translation;
 
-/// The compute a plugin run may burn, in wasmi fuel: enough for tens of
-/// millions of instructions, so a module that plans and reads back a whole
-/// song's worth of JSON fits with room to spare, and one that loops does
-/// not.
+/// The compute a plugin run may burn, in wasmi fuel: enough for a normal
+/// JSON request, while keeping an accidental infinite loop bounded even if
+/// the runtime deadline cannot interrupt an individual wasm call.
 const PLUGIN_FUEL: u64 = 200_000_000;
 
 /// The linear memory a plugin may grow to, from the design: a runaway
 /// allocation fails the run, never the app.
 const PLUGIN_MEMORY: usize = 64 * 1024 * 1024;
 
-/// The wall clock a whole run may take, fuel and fetches included. Fuel
-/// already bounds the compute; this only catches a fetch chain gone
-/// pathological, whose own requests time out far sooner than this.
-const RUN_DEADLINE: Duration = Duration::from_secs(120);
+/// The wall clock a whole run may take, fuel and fetches included. The
+/// blocking worker also receives this deadline so a timed-out future cannot
+/// leave a request retrying for minutes in the background.
+const RUN_DEADLINE: Duration = Duration::from_secs(10);
 
 /// The room one host fetch may hand the plugin, from the design: a body
 /// bigger than this is an answer nobody asked for.
 const MAX_RESPONSE: usize = 5 * 1024 * 1024;
+/// Keep compilation itself bounded before wasmi has to inspect a module.
+const MAX_WASM: usize = 64 * 1024 * 1024;
+
+/// A provider cannot make an unbounded request fan-out or smuggle a huge
+/// URL through the host before the response cap gets a chance to apply.
+const MAX_REQUESTS: usize = 64;
+/// Planned requests are independent, but keeping a small upper bound avoids
+/// turning one provider run into an unbounded connection burst.
+const MAX_CONCURRENT_REQUESTS: usize = 5;
+const MAX_URL: usize = 16 * 1024;
+const MAX_ABI_BUFFER: usize = PLUGIN_MEMORY;
+const MAX_LYRICS_LINES: usize = 10_000;
+const MAX_LYRIC_TEXT: usize = 1024 * 1024;
 
 /// The engine every plugin runs on, with fuel metering on so a runaway
 /// module is slowed, capped, then stopped.
@@ -49,9 +64,9 @@ fn engine() -> &'static Engine {
 }
 
 /// Modules already compiled, by plugin id. wasmi's `Module` is `Send` and
-/// `Sync`, so one compile serves every run; a reinstalled plugin with the
-/// same id but new bytes is told apart by their length.
-type Modules = HashMap<String, (usize, Arc<Module>)>;
+/// `Sync`, so one compile serves every run; the content digest, rather than
+/// a cheap length check, distinguishes a replacement with the same size.
+type Modules = HashMap<String, ([u8; 32], Arc<Module>)>;
 
 static MODULES: OnceLock<Mutex<Modules>> = OnceLock::new();
 
@@ -59,20 +74,40 @@ static MODULES: OnceLock<Mutex<Modules>> = OnceLock::new();
 /// changed, freshly compiled when they have or when the last compile
 /// failed — a module that cannot load is simply not kept.
 fn module(wasm: &[u8], id: &str) -> Result<Arc<Module>, String> {
+    if wasm.len() > MAX_WASM {
+        return Err(format!(
+            "the plugin is {} bytes; the host allows at most {MAX_WASM}",
+            wasm.len()
+        ));
+    }
+    let digest: [u8; 32] = Sha256::digest(wasm).into();
     let modules = MODULES.get_or_init(Mutex::default);
-    let mut modules = modules
+    let modules = modules
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some((len, module)) = modules.get(id)
-        && *len == wasm.len()
+    if let Some((cached, module)) = modules.get(id)
+        && *cached == digest
     {
         return Ok(Arc::clone(module));
     }
+    drop(modules);
     let module = Arc::new(
         Module::new(engine(), &mut &wasm[..])
             .map_err(|error| format!("the plugin {id} is not a loadable module: {error}"))?,
     );
-    modules.insert(id.to_string(), (wasm.len(), Arc::clone(&module)));
+    let mut modules = MODULES
+        .get()
+        .expect("the module cache was initialized above")
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Another thread may have compiled the same bytes while this one was
+    // outside the lock. Reuse that winner instead of replacing it.
+    if let Some((cached, existing)) = modules.get(id)
+        && *cached == digest
+    {
+        return Ok(Arc::clone(existing));
+    }
+    modules.insert(id.to_string(), (digest, Arc::clone(&module)));
     Ok(module)
 }
 
@@ -126,9 +161,9 @@ pub async fn run_translation(
     let kind = kind.to_string();
     let target = target.to_string();
     let lines: Vec<String> = lines.iter().map(|line| line.to_string()).collect();
-    off_thread(move || {
+    off_thread(move |cancelled, deadline| {
         let input = serde_json::json!({ "kind": kind, "target": target, "lines": lines });
-        let output = run_provider(&wasm, &manifest, &kind, &input)?;
+        let output = run_provider(&wasm, &manifest, &kind, &input, cancelled, deadline)?;
         into_translation(output, input["lines"].as_array().map_or(0, Vec::len))
     })
     .await
@@ -144,8 +179,8 @@ pub async fn run_lyrics(
     let wasm = wasm.to_vec();
     let manifest = manifest.clone();
     let input = lyrics_input(query);
-    off_thread(move || {
-        let output = run_provider(&wasm, &manifest, "lyrics", &input)?;
+    off_thread(move |cancelled, deadline| {
+        let output = run_provider(&wasm, &manifest, "lyrics", &input, cancelled, deadline)?;
         into_lyrics(output)
     })
     .await
@@ -174,13 +209,23 @@ pub(crate) fn lyrics_input(query: &crate::lyrics::Query) -> serde_json::Value {
 
 /// Takes a blocking run off the runtime's worker threads, under the one
 /// wall-clock deadline a whole run — fuel and fetches included — may take.
+/// A cancellation bit is shared with the worker because Tokio cannot abort a
+/// `spawn_blocking` closure once it has started. The worker checks it between
+/// wasm calls and HTTP attempts, while fuel bounds a call already in wasm.
 async fn off_thread<T: Send + 'static>(
-    run: impl FnOnce() -> Result<T, String> + Send + 'static,
+    run: impl FnOnce(&AtomicBool, Instant) -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
-    match tokio::time::timeout(RUN_DEADLINE, tokio::task::spawn_blocking(run)).await {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let worker_cancelled = Arc::clone(&cancelled);
+    let deadline = Instant::now() + RUN_DEADLINE;
+    let task = tokio::task::spawn_blocking(move || run(&worker_cancelled, deadline));
+    match tokio::time::timeout(RUN_DEADLINE, task).await {
         Ok(Ok(answer)) => answer,
         Ok(Err(error)) => Err(format!("the plugin task died: {error}")),
-        Err(_) => Err("the plugin missed its deadline".to_string()),
+        Err(_) => {
+            cancelled.store(true, Ordering::Release);
+            Err("the plugin missed its deadline".to_string())
+        }
     }
 }
 
@@ -192,10 +237,17 @@ fn run_provider(
     manifest: &PluginManifest,
     kind: &str,
     input: &serde_json::Value,
+    cancelled: &AtomicBool,
+    deadline: Instant,
 ) -> Result<serde_json::Value, String> {
+    check_deadline(cancelled, deadline)?;
     let module = module(wasm, &manifest.id)?;
     let mut machine = machine(&module)?;
+    required_exports(&machine)?;
     let declared = declared_manifest(&mut machine)?;
+    if declared != *manifest {
+        return Err("the module's manifest differs from the installed manifest".to_string());
+    }
     let capability = PluginManifest::provider_capability(kind);
     if !declared
         .capabilities
@@ -204,22 +256,46 @@ fn run_provider(
     {
         return Err(format!("the plugin claims no {capability} capability"));
     }
+    check_deadline(cancelled, deadline)?;
     let planned: Plan = serde_json::from_value(call_json(&mut machine, "plan", input, None)?)
         .map_err(|error| format!("the plugin's plan is not the JSON the ABI wants: {error}"))?;
+    if planned.requests.len() > MAX_REQUESTS {
+        return Err(format!(
+            "the plugin planned {} requests; the host allows at most {MAX_REQUESTS}",
+            planned.requests.len()
+        ));
+    }
     let urls: Vec<String> = planned
         .requests
         .into_iter()
         .map(|request| request.url)
         .collect();
     for url in &urls {
+        if url.len() > MAX_URL {
+            return Err(format!(
+                "the plugin asked for a {size}-byte URL; the host allows at most {MAX_URL}",
+                size = url.len()
+            ));
+        }
         ensure_allowed(url, manifest)?;
     }
     let what = format!("the plugin {}", manifest.id);
-    let responses: Vec<PluginResponse> = urls
-        .iter()
-        .map(|url| fetch_one(url, &what))
-        .collect::<Result<Vec<_>, String>>()?;
+    check_deadline(cancelled, deadline)?;
+    // A translation/romanization song commonly plans one request per line.
+    // Fetch those independent requests in small batches, while collecting
+    // answers in the planner's order so fulfil sees the same ABI shape as it
+    // would for a sequential host.
+    let responses = bounded_parallel(&urls, MAX_CONCURRENT_REQUESTS, |url| {
+        let response = fetch_one(url, &what, cancelled, deadline);
+        if response.is_err() {
+            // A failed request is a failed run. Tell sibling workers to stop
+            // retrying as soon as the first one reports that failure.
+            cancelled.store(true, Ordering::Release);
+        }
+        response
+    })?;
     let answers = serde_json::json!({ "responses": responses });
+    check_deadline(cancelled, deadline)?;
     call_json(&mut machine, "fulfil", input, Some(&answers))
 }
 
@@ -228,15 +304,22 @@ fn run_provider(
 /// is installed, so nothing lands on disk before it has answered for
 /// itself.
 pub fn validate(wasm: &[u8]) -> Result<PluginManifest, String> {
+    if wasm.len() > MAX_WASM {
+        return Err(format!(
+            "the plugin is {} bytes; the host allows at most {MAX_WASM}",
+            wasm.len()
+        ));
+    }
     let module = Module::new(engine(), &mut &wasm[..])
         .map_err(|error| format!("the plugin is not a loadable module: {error}"))?;
     let mut machine = machine(&module)?;
+    required_exports(&machine)?;
     let declared = declared_manifest(&mut machine)?;
-    if !declared
-        .capabilities
-        .iter()
-        .any(|claimed| claimed.starts_with(PROVIDER_CAPABILITY))
-    {
+    if !declared.capabilities.iter().any(|claimed| {
+        claimed
+            .strip_prefix(PROVIDER_CAPABILITY)
+            .is_some_and(|kind| !kind.is_empty())
+    }) {
         return Err("the plugin claims no provider capability".to_string());
     }
     Ok(declared)
@@ -276,6 +359,71 @@ fn declared_manifest(machine: &mut Machine) -> Result<PluginManifest, String> {
     Ok(declared)
 }
 
+/// Checks the complete v1 export surface before a module is accepted. Doing
+/// this at install time turns a missing `plan` or `fulfil` into a clear
+/// rejection instead of discovering it halfway through a user's first run.
+fn required_exports(machine: &Machine) -> Result<(), String> {
+    memory(machine)?;
+    for (name, result) in [
+        (
+            "alloc",
+            machine
+                .instance
+                .get_typed_func::<i32, i32>(&machine.store, "alloc")
+                .map(|_| ()),
+        ),
+        (
+            "dealloc",
+            machine
+                .instance
+                .get_typed_func::<(i32, i32), ()>(&machine.store, "dealloc")
+                .map(|_| ()),
+        ),
+        (
+            "abi_version",
+            machine
+                .instance
+                .get_typed_func::<(), i32>(&machine.store, "abi_version")
+                .map(|_| ()),
+        ),
+        (
+            "manifest",
+            machine
+                .instance
+                .get_typed_func::<(), i64>(&machine.store, "manifest")
+                .map(|_| ()),
+        ),
+        (
+            "plan",
+            machine
+                .instance
+                .get_typed_func::<(i32, i32), i64>(&machine.store, "plan")
+                .map(|_| ()),
+        ),
+        (
+            "fulfil",
+            machine
+                .instance
+                .get_typed_func::<(i32, i32, i32, i32), i64>(&machine.store, "fulfil")
+                .map(|_| ()),
+        ),
+    ] {
+        result.map_err(|error| format!("the plugin exports no callable {name}: {error}"))?;
+    }
+    Ok(())
+}
+
+/// Returns a stable failure for a run whose worker was cancelled or whose
+/// shared wall-clock budget has expired. Both checks are needed: a timeout
+/// future may set the bit while the worker is between two clock reads.
+fn check_deadline(cancelled: &AtomicBool, deadline: Instant) -> Result<(), String> {
+    if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
+        Err("the plugin missed its deadline".to_string())
+    } else {
+        Ok(())
+    }
+}
+
 /// Writes `payload` into the plugin's memory and calls the export `name`
 /// with it; the packed answer is read back out and read as JSON.
 fn call_json(
@@ -304,9 +452,9 @@ fn call_packed(
     payload: &[u8],
     extra: Option<&[u8]>,
 ) -> Result<Vec<u8>, String> {
-    if payload.len() > i32::MAX as usize {
+    if payload.len() > MAX_ABI_BUFFER || payload.len() > i32::MAX as usize {
         return Err(format!(
-            "the request for the plugin is {} bytes; no call carries that",
+            "the request for the plugin is {} bytes; the host allows at most {MAX_ABI_BUFFER}",
             payload.len()
         ));
     }
@@ -318,7 +466,7 @@ fn call_packed(
     let ptr = alloc
         .call(&mut machine.store, payload.len() as i32)
         .map_err(|error| format!("the plugin trapped in alloc: {error}"))?;
-    if ptr < 0 {
+    if ptr <= 0 {
         return Err("the plugin refused to allocate room for its request".to_string());
     }
     memory
@@ -334,13 +482,19 @@ fn call_packed(
         // The four-argument form carries a second buffer; an empty one
         // arrives as the zero pointer the ABI reads as nothing.
         Some(extra) => {
+            if extra.len() > MAX_ABI_BUFFER || extra.len() > i32::MAX as usize {
+                return Err(format!(
+                    "the answers for the plugin are {} bytes; the host allows at most {MAX_ABI_BUFFER}",
+                    extra.len()
+                ));
+            }
             let (extra_ptr, extra_len) = if extra.is_empty() {
                 (0, 0)
             } else {
                 let ptr = alloc
                     .call(&mut machine.store, extra.len() as i32)
                     .map_err(|error| format!("the plugin trapped in alloc: {error}"))?;
-                if ptr < 0 {
+                if ptr <= 0 {
                     return Err("the plugin refused to allocate room for its answers".to_string());
                 }
                 memory
@@ -370,9 +524,12 @@ fn read_packed(machine: &mut Machine, packed: i64) -> Result<Vec<u8>, String> {
     let packed = packed as u64;
     let ptr = (packed >> 32) as u32;
     let len = packed as u32;
-    if len as usize > PLUGIN_MEMORY {
+    if ptr == 0 || ptr > i32::MAX as u32 {
+        return Err("the plugin answered with an invalid pointer".to_string());
+    }
+    if len as usize > MAX_ABI_BUFFER {
         return Err(format!(
-            "the plugin answered with {len} bytes; the sandbox allows {PLUGIN_MEMORY}"
+            "the plugin answered with {len} bytes; the sandbox allows {MAX_ABI_BUFFER}"
         ));
     }
     let memory = memory(machine)?;
@@ -408,6 +565,14 @@ fn ensure_allowed(url: &str, manifest: &PluginManifest) -> Result<(), String> {
             parsed.scheme()
         ));
     }
+    if parsed.username() != "" || parsed.password().is_some() {
+        return Err("the plugin asked for a URL carrying user credentials".to_string());
+    }
+    if parsed.port().is_some_and(|port| port != 443) {
+        return Err(format!(
+            "the plugin asked for {url:?} on a non-HTTPS port; only port 443 is allowed"
+        ));
+    }
     let host = parsed
         .host_str()
         .unwrap_or_default()
@@ -436,9 +601,45 @@ fn http() -> &'static reqwest::blocking::Client {
         reqwest::blocking::Client::builder()
             .user_agent(concat!("woofer/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(30))
+            // A provider is allowed to fetch only the host it declared. A
+            // redirect could otherwise move the request to an unallowlisted
+            // host after this check, so redirects stay explicit failures.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("unable to build the plugin fetch client")
     })
+}
+
+/// Runs independent planned work in bounded batches and returns each answer
+/// in input order. Scoped threads let the blocking HTTP client run without
+/// occupying a Tokio worker, while the batch boundary keeps the maximum
+/// number of in-flight requests explicit and cheap to reason about.
+fn bounded_parallel<T, U, F>(items: &[T], max_parallel: usize, task: F) -> Result<Vec<U>, String>
+where
+    T: Sync,
+    U: Send,
+    F: Fn(&T) -> Result<U, String> + Sync,
+{
+    let max_parallel = max_parallel.max(1);
+    let mut answers = Vec::with_capacity(items.len());
+    for batch in items.chunks(max_parallel) {
+        let batch_answers = std::thread::scope(|scope| {
+            let handles: Vec<_> = batch
+                .iter()
+                .map(|item| scope.spawn(|| task(item)))
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle
+                        .join()
+                        .map_err(|_| "the plugin request worker panicked".to_string())?
+                })
+                .collect::<Result<Vec<_>, String>>()
+        })?;
+        answers.extend(batch_answers);
+    }
+    Ok(answers)
 }
 
 /// One GET, tried again on a fault the way the built-in translator tries:
@@ -447,12 +648,19 @@ fn http() -> &'static reqwest::blocking::Client {
 /// asks when it sends one. The plugin is the one who decides what an
 /// answered refusal means, so every status that arrives is handed over —
 /// only a request that never gets an answer is tried again.
-fn fetch_retrying(url: &str, what: &str) -> Result<reqwest::blocking::Response, String> {
+fn fetch_retrying(
+    url: &str,
+    what: &str,
+    cancelled: &AtomicBool,
+    deadline: Instant,
+) -> Result<reqwest::blocking::Response, String> {
     use crate::translate::{ATTEMPTS, FIRST_RETRY, MAX_RETRY};
     let mut wait = FIRST_RETRY;
     for attempt in 0..ATTEMPTS {
+        check_deadline(cancelled, deadline)?;
         let asked;
-        match http().get(url).send() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match http().get(url).timeout(remaining).send() {
             Ok(response) => {
                 let status = response.status();
                 if !status.is_server_error() || attempt + 1 == ATTEMPTS {
@@ -475,6 +683,7 @@ fn fetch_retrying(url: &str, what: &str) -> Result<reqwest::blocking::Response, 
             }
         }
         let pause = asked.unwrap_or(wait) + Duration::from_millis(rand::random::<u64>() % 250);
+        let pause = pause.min(deadline.saturating_duration_since(Instant::now()));
         std::thread::sleep(pause);
         wait = (wait * 2).min(MAX_RETRY);
     }
@@ -483,8 +692,13 @@ fn fetch_retrying(url: &str, what: &str) -> Result<reqwest::blocking::Response, 
 
 /// Fetches one planned request and reads the answer within the response
 /// cap, as the `{"status", "body"}` the ABI hands the plugin.
-fn fetch_one(url: &str, what: &str) -> Result<PluginResponse, String> {
-    let response = fetch_retrying(url, what)?;
+fn fetch_one(
+    url: &str,
+    what: &str,
+    cancelled: &AtomicBool,
+    deadline: Instant,
+) -> Result<PluginResponse, String> {
+    let response = fetch_retrying(url, what, cancelled, deadline)?;
     let status = response.status().as_u16();
     if let Some(length) = response.content_length()
         && usize::try_from(length).is_ok_and(|length| length > MAX_RESPONSE)
@@ -493,8 +707,12 @@ fn fetch_one(url: &str, what: &str) -> Result<PluginResponse, String> {
             "{what} offered {length} bytes; the host fetches at most {MAX_RESPONSE}"
         ));
     }
-    let body = response
-        .bytes()
+    // Read at most one byte past the response cap. `Response::bytes()` would
+    // buffer an untrusted body in full before the size check could run.
+    let mut body = Vec::with_capacity(MAX_RESPONSE.min(64 * 1024));
+    response
+        .take((MAX_RESPONSE + 1) as u64)
+        .read_to_end(&mut body)
         .map_err(|error| format!("{what} would not hand over its answer: {error}"))?;
     if body.len() > MAX_RESPONSE {
         return Err(format!(
@@ -557,14 +775,28 @@ fn into_lyrics(output: serde_json::Value) -> Result<Option<crate::lyrics::Lyrics
     let Some(found) = output.lyrics else {
         return Err("the plugin's answer carries no lyrics".to_string());
     };
+    if found.lines.len() > MAX_LYRICS_LINES {
+        return Err(format!(
+            "the plugin answered with {} lyric lines; the host allows at most {MAX_LYRICS_LINES}",
+            found.lines.len()
+        ));
+    }
     let lines: Vec<crate::lyrics::Line> = found
         .lines
         .into_iter()
-        .map(|line| crate::lyrics::Line {
-            at_ms: line.at_ms,
-            text: line.text,
+        .map(|line| {
+            if line.text.len() > MAX_LYRIC_TEXT {
+                return Err(format!(
+                    "the plugin answered with a {}-byte lyric line; the host allows at most {MAX_LYRIC_TEXT}",
+                    line.text.len()
+                ));
+            }
+            Ok(crate::lyrics::Line {
+                at_ms: line.at_ms,
+                text: line.text,
+            })
         })
-        .collect();
+        .collect::<Result<_, String>>()?;
     if lines.is_empty() {
         return Ok(None);
     }
@@ -677,6 +909,14 @@ mod tests {
     }
 
     #[test]
+    fn credentials_and_nonstandard_ports_are_not_allowed() {
+        let manifest = manifest(&["clients5.google.com"]);
+        assert!(ensure_allowed("https://user:pass@clients5.google.com/x", &manifest).is_err());
+        assert!(ensure_allowed("https://clients5.google.com:8443/x", &manifest).is_err());
+        assert!(ensure_allowed("https://clients5.google.com:443/x", &manifest).is_ok());
+    }
+
+    #[test]
     fn a_fulfil_answer_lands_on_its_lines() {
         let found = into_translation(
             json!({"romanized": ["konnichiwa", null], "translated": ["hello", "world", "extra"]}),
@@ -779,6 +1019,32 @@ mod tests {
             ..query
         });
         assert_eq!(unknown["lines"][3], "");
+    }
+
+    #[test]
+    fn planned_work_is_bounded_and_answers_keep_their_order() {
+        use std::sync::atomic::AtomicUsize;
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let items: Vec<usize> = (0..12).collect();
+        let answers = bounded_parallel(&items, MAX_CONCURRENT_REQUESTS, |item| {
+            let active_now = active.fetch_add(1, Ordering::AcqRel) + 1;
+            peak.fetch_max(active_now, Ordering::AcqRel);
+            // Sleeping makes overlap observable even on a lightly loaded
+            // single-core CI runner without involving the network.
+            std::thread::sleep(Duration::from_millis(10));
+            active.fetch_sub(1, Ordering::AcqRel);
+            Ok(item * 2)
+        })
+        .expect("all bounded work should answer");
+
+        assert_eq!(answers, (0..12).map(|item| item * 2).collect::<Vec<_>>());
+        assert!(peak.load(Ordering::Acquire) > 1, "work did not overlap");
+        assert!(
+            peak.load(Ordering::Acquire) <= MAX_CONCURRENT_REQUESTS,
+            "peak exceeded the request bound"
+        );
     }
 
     #[tokio::test]

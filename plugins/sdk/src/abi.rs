@@ -15,7 +15,10 @@ const ZERO_PTR: i32 = ALIGN as i32;
 /// cannot be served, the never-read sentinel [`ZERO_PTR`] when `len` is
 /// zero.
 pub fn alloc(len: i32) -> i32 {
-    if len <= 0 {
+    if len < 0 {
+        return 0;
+    }
+    if len == 0 {
         return ZERO_PTR;
     }
     match Layout::from_size_align(len as usize, ALIGN) {
@@ -43,6 +46,9 @@ fn pack(ptr: i32, len: i32) -> i64 {
 /// means the room could not be had; the host reads that as the call
 /// failing.
 pub fn return_str(text: &str) -> i64 {
+    if text.len() > i32::MAX as usize {
+        return 0;
+    }
     let ptr = alloc(text.len() as i32);
     if ptr == 0 {
         return 0;
@@ -128,4 +134,16 @@ fn attach_responses(input: String, responses: String) -> Result<String, String> 
         .ok_or_else(|| "malformed input: not a JSON object".to_string())?;
     fields.insert("responses".to_string(), answers);
     Ok(input.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_and_empty_allocations_have_distinct_sentinels() {
+        assert_eq!(alloc(-1), 0);
+        assert!(alloc(0) > 0);
+        assert_eq!(return_str(""), pack(ZERO_PTR, 0));
+    }
 }
