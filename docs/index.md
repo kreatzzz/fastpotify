@@ -65,7 +65,7 @@ features:
   </div>
   <div class="landing-tail">
     <p>Playing needs Spotify Premium. Browsing your library works without it.</p>
-    <a href="/getting-started">See how sign-in and playback work →</a>
+    <a href="./getting-started">See how sign-in and playback work →</a>
   </div>
 </section>
 
@@ -74,15 +74,15 @@ features:
   <h2 id="landing-paths-title">Start with a song. Stay for the details.</h2>
   <div class="landing-signals">
     <div class="landing-signal">
-      <strong><a href="/download">download</a></strong>
+      <strong><a href="./download">download</a></strong>
       <span>See the current build status, platform notes, and the source-install route.</span>
     </div>
     <div class="landing-signal">
-      <strong><a href="/using-woofer">use it</a></strong>
+      <strong><a href="./using-woofer">use it</a></strong>
       <span>Learn the player, library, queue, lyrics, tray, and keyboard shortcuts.</span>
     </div>
     <div class="landing-signal">
-      <strong><a href="/plugins">extend it</a></strong>
+      <strong><a href="./plugins">extend it</a></strong>
       <span>Read the reviewed, sandboxed plugin system and its honest limits.</span>
     </div>
   </div>

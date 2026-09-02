@@ -1,6 +1,7 @@
 import { defineConfig } from 'vitepress'
 
-const siteUrl = 'https://usewoofer.com'
+const base = '/woofer/'
+const siteUrl = 'https://kreatzzz.github.io/woofer'
 
 function canonicalPath(relativePath) {
   const withoutExtension = relativePath.replace(/\.md$/, '')
@@ -10,6 +11,7 @@ function canonicalPath(relativePath) {
 }
 
 export default defineConfig({
+  base,
   title: 'Woofer',
   description: 'A playful, fast native Spotify client for Linux, macOS, and Windows.',
   lang: 'en-US',
@@ -17,10 +19,22 @@ export default defineConfig({
   cleanUrls: true,
   lastUpdated: true,
   sitemap: {
-    hostname: siteUrl,
+    hostname: 'https://kreatzzz.github.io',
+    transformItems(items) {
+      const prefix = base.replace(/\/$/, '')
+      return items.map((item) => {
+        const route = item.url.startsWith('/') ? item.url : `/${item.url}`
+        return {
+          ...item,
+          url: route.startsWith(`${prefix}/`) || route === prefix
+            ? route
+            : `${prefix}${route}`,
+        }
+      })
+    },
   },
   head: [
-    ['link', { rel: 'icon', href: '/assets/images/logo.svg' }],
+    ['link', { rel: 'icon', href: `${base}assets/images/logo.svg` }],
   ],
   rewrites: {
     // keep the established public URLs while letting the source stay grouped
