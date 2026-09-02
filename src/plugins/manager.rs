@@ -351,7 +351,7 @@ pub fn list(dirs: &AppDirs) -> Vec<Plugin> {
 }
 
 /// The metadata needed to draw provider rows, without instantiating every
-/// wasm module. Runtime callers use this path first and let [`host::run_*`]
+/// wasm module. Runtime callers use this path first and let the host runner
 /// validate the selected module only when it is actually asked to answer.
 /// Integrity-pinned sidecars supply the digest without rereading their wasm;
 /// legacy sidecars still need one read to derive a cache identity.

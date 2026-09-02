@@ -169,7 +169,7 @@ fn slug(value: &str) -> Result<String, String> {
 }
 
 /// Looks a slug up in the catalog. Split from the network so tests can
-/// feed [`find`] a registry on paper.
+/// feed the private `find` helper a registry on paper.
 pub fn resolve(slug: &str, catalog_url: &str) -> Result<CatalogEntry, String> {
     let body = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(10))

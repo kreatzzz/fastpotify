@@ -3044,8 +3044,8 @@ impl App {
     /// Writes a plugin's wasm to disk. The caller toasts the outcome.
     /// This synchronous entry point remains useful to tests and callers that
     /// already run away from the UI. User-facing downloads and dropped files
-    /// use [`queue_plugin_install`] so validation and disk writes do not hold
-    /// an egui frame.
+    /// use the background install paths so validation and disk writes do not
+    /// hold an egui frame.
     /// Installing never displaces: the new provider takes the back of
     /// every chain it can answer for.
     pub fn install_plugin_bytes(&mut self, wasm: &[u8]) -> Result<String, String> {
