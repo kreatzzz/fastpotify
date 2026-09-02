@@ -140,7 +140,7 @@ jobs:
           shared-key: release-${{ matrix.target }}
       - name: Build release binary
         run: cargo build --locked --release --target ${{ matrix.target }}
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: .ci-cache/appimage-tools
           key: appimage-tools-${{ matrix.arch }}-appimagetool-1.9.1-linuxdeploy-1-alpha-20251107-1
@@ -407,7 +407,9 @@ jobs:
           cp -R Woofer.app "$stage/"
           cp README.md LICENSE "$stage/"
           ln -s /Applications "$stage/Applications"
-          find "$stage" -exec touch -t 198001010000 {} +
+          # `touch` follows symlinks on macOS. Exclude the Applications alias so
+          # reproducible timestamps never try to modify the system directory.
+          find "$stage" ! -type l -exec touch -t 198001010000 {} +
           mkdir -p dist
           hdiutil create -volname Woofer -srcfolder "$stage" -ov \
             -format UDZO "dist/$name.dmg"
