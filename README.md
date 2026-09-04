@@ -88,15 +88,18 @@ lyrics, and plugins — and in this repository under [docs/](docs/).
   a launcher, or a hotkey.
 - **Extendable with plugins.** Plugins are sandboxed WebAssembly modules
   that compute; Woofer does every fetch and holds each one to the domains
-  its manifest declares. Translate and Romanize ship inside the app, and
-  more install from the catalog at [usewoofer.com](https://usewoofer.com).
+  its manifest declares. Translate and Romanize are reviewed providers in
+  the catalog at [usewoofer.com](https://usewoofer.com); they install
+  separately, while the built-in engines remain the fallback.
   See [Plugins](#plugins) below.
 
 ## Install
 
-Installers and archives for macOS, Windows, and Linux land on the
-[releases page](https://github.com/kreatzzz/woofer/releases/latest), with
-checksums, when a version is tagged.
+Woofer **v0.4.0 is tagged and its release workflow has been verified**, but
+the public GitHub release has not been published yet. Installers and archives
+will appear on the [releases page](https://github.com/kreatzzz/woofer/releases)
+with checksums after that explicit publish pass; build from source below in
+the meantime.
 
 The macOS build is unsigned for now, so macOS blocks the first open:
 right-click **Woofer** and choose **Open** — on recent macOS, System
@@ -106,10 +109,10 @@ favour once: **More info → Run anyway**.
 
 ### Package managers
 
-Being published; see
-[docs/dev/release-plan.md](docs/dev/release-plan.md) for the order they
-land in. GitHub Releases is the channel that works today, once a version
-is tagged.
+The package-manager entries are prepared from the published release's
+`checksums.txt`; see [the release runbook](docs/dev/release-plan.md) and
+[`packaging/README.md`](packaging/README.md). They are not live until the
+first public GitHub release is published.
 
 - macOS, with [Homebrew](https://brew.sh):
   `brew install kreatzzz/tap/woofer` *(coming soon)*
@@ -159,9 +162,11 @@ plugin to the domains its manifest declares. No socket, no file, no clock
 crosses the boundary, and the app is fully functional with zero plugins
 installed.
 
-Translate and Romanize ship inside the app: the first echoes lyric lines
-in your language, the second rewrites them in Latin letters. Both are
-disable-able on the Plugins page.
+Translate and Romanize are the first reviewed catalog providers: the first
+echoes lyric lines in your language, and the second rewrites them in Latin
+letters. Install either from [usewoofer.com](https://usewoofer.com) or from a
+local `.wasm` file on the Plugins page. Neither module is bundled in the app;
+the built-in engines remain available when a provider is absent or disabled.
 
 More plugins live in the catalog at [usewoofer.com](https://usewoofer.com).
 Press **Open in Woofer** on a card and the running app offers the install,
@@ -307,8 +312,8 @@ any time without signing you out.
 - `src/lyrics.rs`: LRCLIB fetch, match, and LRC parse behind a 30-day disk
   cache.
 - `src/translate.rs` and `src/plugins/`: the built-in translator fallback and
-  the wasmi plugin host; the bundled Translate and Romanize modules ride
-  inside the binary.
+  the wasmi plugin host. Translate and Romanize are catalog modules installed
+  separately; no plugin module is linked into the binary.
 - `src/app.rs`, `src/model.rs`, `src/ui/`: state, navigation, and the views.
   Views collect `Action`s while drawing and the app applies them afterwards.
 - `src/mpris.rs`: Linux media controls on a dedicated thread.

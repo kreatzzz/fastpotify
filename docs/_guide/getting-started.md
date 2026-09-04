@@ -4,12 +4,14 @@ description: Install Woofer, sign in through your browser, and enable playback o
 nav_order: 2
 ---
 
+# Getting started
+
 ## Install
 
-The [Download page](/download) has installers and archives for macOS,
-Windows, and Linux.
+Woofer v0.4.0 is tagged and verified, but public installers and archives are
+not available yet. The [Download page](/download) tracks publication status.
 
-Or build from source with [Rust](https://rustup.rs) 1.95 or newer:
+For now, build from source with [Rust](https://rustup.rs) 1.95 or newer:
 
 ```sh
 git clone https://github.com/kreatzzz/woofer

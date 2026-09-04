@@ -5,26 +5,22 @@ description: The reproducible runbook for publishing Woofer builds and package-m
 
 # Release and packaging runbook
 
-State: **release preparation authorized** (Sep 2, 2026). An earlier `v0.3.0`
-tag attempt triggered nothing (fork Actions quirk) and was deleted; zero
-releases exist. The working tree is now version `0.4.0` in `Cargo.toml`.
-After the release workflow lands on `main` and its branch smoke run passes,
-run this top to bottom with that version.
+State: **v0.4.0 is tagged and verified, but unpublished** (Sep 4, 2026).
+An earlier `v0.3.0` tag attempt triggered nothing (fork Actions quirk) and
+was deleted; no public GitHub releases exist. The repository version is
+`0.4.0` in `Cargo.toml`, and the release build/verification run is green.
+The runbook below starts with the explicit publish pass; do not create a
+second `v0.4.0` tag.
 
 ## 0. Cut, verify, and publish the release
 
-```bash
-git tag v0.4.0 && git push origin v0.4.0
-```
+The successful verification run built and checked the complete release matrix
+but did not publish a GitHub release. The workflow also accepts a manual
+dispatch: a branch run is an isolated smoke build named
+`0.4.0-dev.<run-number>`, while a dispatch from the release tag can publish
+only when the `publish` input is explicitly set to `true`.
 
-Then **verify a run appeared** (`gh run list --repo kreatzzz/woofer`). A tag
-push runs the complete build and verification matrix but does not publish a
-GitHub release. The workflow also accepts a manual dispatch: a branch run is
-an isolated smoke build named `0.4.0-dev.<run-number>`, while a dispatch from
-the release tag can publish only when the `publish` input is explicitly set
-to `true`.
-
-After the tag run is green, start the publish pass from that same tag:
+Start the publish pass from the already verified tag:
 
 ```bash
 gh workflow run Release --repo kreatzzz/woofer --ref v0.4.0 -f publish=true
@@ -75,6 +71,20 @@ cask "woofer" do
 end
 ```
 
+Once the release assets are public, the repository's handoff helper renders
+this cask with the real DMG hash (and renders the AUR and winget files at the
+same time):
+
+```bash
+bash packaging/release/prepare-packages.sh \
+  --dist /path/to/woofer-release-assets \
+  --version 0.4.0 \
+  --output-dir /tmp/woofer-packages
+```
+
+It verifies every selected asset against `checksums.txt` before writing any
+manifest, so package files are not prepared with placeholder hashes.
+
 Commit, push. Users: `brew install kreatzzz/tap/woofer`. Every future
 release: bump `version` + `sha256` in one tap commit. If the first DMG is
 unsigned, put the first-open note in the README: right-click → Open, or
@@ -114,6 +124,12 @@ Validate with `makepkg -f` (or `namcap`), then
 `git init && git add . && git commit && git push aur:woofer.git`. Test with
 `yay -S woofer` in a clean chroot if possible.
 
+The helper writes the release package to
+`/tmp/woofer-packages/aur/woofer/PKGBUILD` and the rolling package to
+`/tmp/woofer-packages/aur/woofer-git/PKGBUILD`. The release package receives
+the verified x86_64 archive hash; the `-git` package deliberately uses
+`sha256sums=('SKIP')` because its source is a moving Git checkout.
+
 **`woofer-git`**: same shape, `makedepends=('cargo' 'git')`,
 `source=("$pkgname::git+$url.git")`, `pkgver()` from `git describe`,
 build with `cargo build --release --locked`, same `package()` installs.
@@ -122,17 +138,19 @@ build with `cargo build --release --locked`, same `package()` installs.
 
 1. Fork `microsoft/winget-pkgs` under `kreatzzz`, shallow-clone it.
 2. Add `manifests/k/kreatzzz/Woofer/0.4.0/` with three YAML files:
-   - `kreatzzz.Woofer.yaml` — `PackageIdentifier: kreatzzz.Woofer`,
-     `PackageVersion: 0.4.0`, `PackageLocale`, `Publisher: kreatzzz`,
-     `PackageName: Woofer`, `License: MIT`,
-     `ShortDescription`, `Moniker: woofer`.
+   - `kreatzzz.Woofer.yaml` — the version manifest with
+     `DefaultLocale: en-US`.
    - `kreatzzz.Woofer.installer.yaml` — `InstallerType: inno`, both
      architectures pointing at the GitHub `…-setup.exe` URLs, each with
      its sha256 from `checksums.txt`, and
      `InstallerSwitches: { Silent: /VERYSILENT /SUPPRESSMSGBOXES /NORESTART,
      SilentWithProgress: /SILENT }`, `AppsAndFeaturesEntries` with
      `ProductCode` if the .iss declares one.
-   - `kreatzzz.Woofer.locale.en-US.yaml` — description, tags, homepage.
+   - `kreatzzz.Woofer.locale.en-US.yaml` — the default English locale with
+     publisher, description, tags, and homepage.
+   The helper writes these three files below
+   `/tmp/woofer-packages/winget/manifests/k/kreatzzz/Woofer/0.4.0/` and fills
+   both installer hashes from the published `checksums.txt`.
 3. Validate locally with `winget validate` (on Windows) or the
    `winget-pkgs` CI, then open the PR with their template. The bot
    verifies the URLs and hashes; a human reviews (1-3 days). First-time

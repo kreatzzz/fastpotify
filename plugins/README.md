@@ -2,8 +2,9 @@
 
 A plugin is one `wasm32-unknown-unknown` module: it computes and asks; the
 host fetches, retries, caches, and decides. Nothing here touches a socket,
-a file, or the clock. The design lives in `docs/plugins.md`; this is the
-handbook for writing one.
+a file, or the clock. The product overview lives in `docs/plugins.md`; the
+complete ABI and sandbox contract lives in `docs/dev/plugin-architecture.md`.
+This is the handbook for writing one.
 
     plugins/
       sdk/         woofer-plugin-sdk — the ABI, once, and the test harness
@@ -91,13 +92,20 @@ let planned = plugin.plan(&input.to_string()).unwrap();
 let answered = plugin.fulfil(&input.to_string(), &[Response { status: 200, body: … }]).unwrap();
 ```
 
-## Building and shipping
+## Building and submitting to the catalog
 
     cd plugins/<id>
     cargo test                                            # the harness suite
     cargo build --release --target wasm32-unknown-unknown
-    cp target/wasm32-unknown-unknown/release/woofer_plugin_<id>.wasm \
-       ../../assets/plugins/<id>.wasm
 
-The host embeds the wasm from `assets/plugins/` verbatim; overwrite the
-placeholder and keep the manifest's `sha256` honest at catalog time.
+The resulting module stays in the crate's `target/` directory for local
+testing. Woofer does not embed plugin modules in `assets/` or in the
+application binary. The official Translate and Romanize modules are reviewed
+and published separately in the catalog repository, under
+`plugins/<id>/plugin.wasm`.
+
+When submitting a catalog entry, keep the module manifest's
+`capabilities` in the `provider:<kind>` form, give the catalog a matching
+SHA-256 digest, and use absolute HTTPS URLs for the module and its source
+link. The catalog CI verifies the manifest and regenerates `registry.json`;
+the app then verifies that digest again before installing the module.

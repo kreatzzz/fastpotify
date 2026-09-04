@@ -84,13 +84,15 @@ host re-verifies each installed module against its catalog digest.
 and user-arbitrated (never a silent swap); commands and panels are
 multi-active and namespaced; the host merges nothing silently. Plugins
 never draw UI — they contribute data and schema-driven settings; the
-v1.5 `panel` vocabulary is drafted in `docs/plugins.md` §6. Plugins
+v1.5 `panel` vocabulary is drafted in the
+[plugin architecture](/dev/plugin-architecture#the-panel-widget-vocabulary-v1-5-first-cut).
+Plugins
 cannot call each other in v1.
 
 **The catalog is approval-only and is a website, not an app surface**:
-`kreatzzz/woofer-plugins` (git) → a planned static site on Vercel at
-**usewoofer.com**. The domain is owned, but deployment and DNS still need to
-be completed. A PR merge is the review; `registry.json` carries
+`kreatzzz/woofer-plugins` (git) → the static catalog at
+[**usewoofer.com**](https://usewoofer.com). A PR merge is the review;
+`registry.json` carries
 sha256-pinned wasm. In-app: the Plugins page (top-bar puzzle icon) installs
 from URL or drag-and-drop, enables/disables, deletes, visits source — no
 in-app browsing.
@@ -104,6 +106,6 @@ with zero plugins.
 **Homebrew tap → AUR → winget, in that order**, after a tagged release.
 The release workflow builds Linux x64+arm64 tarballs, Windows x64+arm64
 (zip + Inno Setup installer), a macOS universal DMG, and checksums, on a
-`v*` tag. See `docs/dev/release-plan.md` for the full runbook — currently
-**halted at the user's request**. The working tree is version `0.4.0`, but no
-public release exists yet.
+`v*` tag. See the [release runbook](/dev/release-plan) for the complete
+process. **v0.4.0 is tagged and its workflow is verified, but its binaries and
+package-manager entries are not public yet.**

@@ -4,6 +4,8 @@ description: Woofer's independent Spotify grants, what is stored, and how API tr
 nav_order: 1
 ---
 
+# How it connects
+
 ## Independent grants, once each
 
 Woofer uses independent credentials for Web API coverage, optional

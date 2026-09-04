@@ -5,10 +5,10 @@ description: Get Woofer for macOS, Windows, or Linux, with install instructions 
 
 # Download Woofer
 
-Woofer is currently version **0.4.0 in the source tree**. There is no public
-binary release yet: publishing is paused while the release workflow and
-package-manager channels are prepared. This page will grow direct, checksum-
-verified downloads as soon as a tagged release is available.
+Woofer **v0.4.0 is tagged and its release workflow has been verified**. There
+is no public binary release yet while publication and package-manager channels
+are prepared. This page will add direct, checksum-verified downloads when the
+release assets are public.
 
 For now, the reliable way to try Woofer is to build it from source. The
 application itself is ready for Linux, macOS, and Windows; the release status
@@ -41,7 +41,7 @@ same libraries and the pinned toolchain.
 
 ## What the release will include
 
-Once a release is tagged, the GitHub release will carry:
+When the v0.4.0 release is published, its GitHub release will carry:
 
 - a universal macOS DMG for Apple Silicon and Intel;
 - Windows installers and portable archives for x86_64 and ARM64;

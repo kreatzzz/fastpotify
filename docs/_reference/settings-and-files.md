@@ -4,6 +4,8 @@ description: Where Woofer keeps configuration, credentials, and caches, and what
 nav_order: 0
 ---
 
+# Settings and files
+
 ## Where things live
 
 Woofer follows each platform's conventions. On Linux:

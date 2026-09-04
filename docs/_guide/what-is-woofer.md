@@ -4,6 +4,8 @@ description: Why Woofer exists, what it supports, and its current limitations.
 nav_order: 0
 ---
 
+# What is Woofer?
+
 ## Why Woofer
 
 The official Spotify client includes a browser engine and can use a

@@ -4,6 +4,8 @@ description: "Use a personal Spotify app for a separate quota while shared cover
 nav_order: 4
 ---
 
+# Make it even faster
+
 ## API rate limits
 
 Woofer loads library and catalogue data through Spotify's Web API, which

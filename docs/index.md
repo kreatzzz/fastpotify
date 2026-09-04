@@ -74,16 +74,22 @@ features:
   <h2 id="landing-paths-title">Start with a song. Stay for the details.</h2>
   <div class="landing-signals">
     <div class="landing-signal">
-      <strong><a href="./download">download</a></strong>
-      <span>See the current build status, platform notes, and the source-install route.</span>
+      <a class="landing-path" href="./download">
+        <strong>download</strong>
+        <span>See the current build status, platform notes, and the source-install route.</span>
+      </a>
     </div>
     <div class="landing-signal">
-      <strong><a href="./using-woofer">use it</a></strong>
-      <span>Learn the player, library, queue, lyrics, tray, and keyboard shortcuts.</span>
+      <a class="landing-path" href="./using-woofer">
+        <strong>use it</strong>
+        <span>Learn the player, library, queue, lyrics, tray, and keyboard shortcuts.</span>
+      </a>
     </div>
     <div class="landing-signal">
-      <strong><a href="./plugins">extend it</a></strong>
-      <span>Read the reviewed, sandboxed plugin system and its honest limits.</span>
+      <a class="landing-path" href="./plugins">
+        <strong>extend it</strong>
+        <span>Read the reviewed, sandboxed plugin system and its honest limits.</span>
+      </a>
     </div>
   </div>
 </section>

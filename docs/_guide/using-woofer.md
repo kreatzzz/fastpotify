@@ -4,6 +4,8 @@ description: Playing music, managing your library and playlists, devices, the qu
 nav_order: 3
 ---
 
+# Everyday use
+
 ## Playing music
 
 Playlist, album, artist, and podcast pages have play buttons. Cards show one
