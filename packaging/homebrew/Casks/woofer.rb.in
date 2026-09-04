@@ -1,0 +1,18 @@
+cask "woofer" do
+  version "__VERSION__"
+  sha256 "__MACOS_SHA256__"
+
+  url "https://github.com/kreatzzz/woofer/releases/download/v#{version}/woofer-v#{version}-macos-universal.dmg"
+  name "Woofer"
+  desc "Fast, lightweight, native Spotify client"
+  homepage "https://github.com/kreatzzz/woofer"
+
+  depends_on macos: ">= :big_sur"
+
+  livecheck do
+    url :url
+    strategy :github_latest
+  end
+
+  app "Woofer.app"
+end

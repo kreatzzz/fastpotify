@@ -1,0 +1,5 @@
+PackageIdentifier: kreatzzz.Woofer
+PackageVersion: __VERSION__
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.12.0

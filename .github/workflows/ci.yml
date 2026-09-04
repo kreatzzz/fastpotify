@@ -164,6 +164,36 @@ jobs:
           unzip -t "$tmp/one/woofer-v0.0.0-x86_64-pc-windows-msvc.zip" >/dev/null
           bash packaging/release/checksums.sh "$tmp/one"
           (cd "$tmp/one" && sha256sum -c checksums.txt)
+      - name: Exercise package-manager handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          package_dist="$tmp/package-dist"
+          package_output="$tmp/package-output"
+          mkdir -p "$package_dist"
+          for name in \
+            woofer-v0.0.0-macos-universal.dmg \
+            woofer-v0.0.0-x86_64-unknown-linux-gnu.tar.gz \
+            woofer-v0.0.0-x86_64-pc-windows-msvc-setup.exe \
+            woofer-v0.0.0-aarch64-pc-windows-msvc-setup.exe; do
+            cp /usr/bin/true "$package_dist/$name"
+          done
+          bash packaging/release/checksums.sh "$package_dist"
+          bash packaging/release/prepare-packages.sh \
+            --dist "$package_dist" --version 0.0.0 --output-dir "$package_output"
+          test -s "$package_output/homebrew/Casks/woofer.rb"
+          test -s "$package_output/aur/woofer/PKGBUILD"
+          test -s "$package_output/aur/woofer-git/PKGBUILD"
+          test -s "$package_output/winget/manifests/k/kreatzzz/Woofer/0.0.0/kreatzzz.Woofer.yaml"
+          test -s "$package_output/winget/manifests/k/kreatzzz/Woofer/0.0.0/kreatzzz.Woofer.installer.yaml"
+          test -s "$package_output/winget/manifests/k/kreatzzz/Woofer/0.0.0/kreatzzz.Woofer.locale.en-US.yaml"
+          bash -n "$package_output/aur/woofer/PKGBUILD" "$package_output/aur/woofer-git/PKGBUILD"
+          if grep -R -n -E '__[A-Z0-9_]+__' "$package_output"; then
+            echo 'package output still contains an unresolved template token' >&2
+            exit 1
+          fi
 
   docs:
     name: docs

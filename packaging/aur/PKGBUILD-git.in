@@ -1,0 +1,35 @@
+# Maintainer: Carmine Paolino <carmine@kreatzzz.com>
+pkgname=woofer-git
+pkgver=0
+pkgrel=1
+pkgdesc="Fast, lightweight, native Spotify client built with Rust and egui"
+arch=('x86_64' 'aarch64')
+url="https://github.com/kreatzzz/woofer"
+license=('MIT')
+depends=('alsa-lib' 'libpulse' 'wayland' 'libxkbcommon')
+makedepends=('cargo' 'git')
+provides=('woofer')
+conflicts=('woofer')
+source=('woofer::git+https://github.com/kreatzzz/woofer.git')
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$srcdir/woofer"
+  git describe --long --tags --match 'v[0-9]*' --always | \
+    sed -E 's/^v//; s/-([0-9]+)-g/.r\1.g/; s/-/./g'
+}
+
+build() {
+  cd "$srcdir/woofer"
+  cargo build --release --locked
+}
+
+package() {
+  cd "$srcdir/woofer"
+  install -Dm755 target/release/woofer "$pkgdir/usr/bin/woofer"
+  install -Dm644 packaging/applications/woofer.desktop \
+    "$pkgdir/usr/share/applications/woofer.desktop"
+  install -Dm644 packaging/icons/woofer.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/woofer.svg"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/woofer/LICENSE"
+}
