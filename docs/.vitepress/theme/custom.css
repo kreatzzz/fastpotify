@@ -316,7 +316,17 @@ body {
   padding: 0 32px 32px;
 }
 
-.VPFeatures .items { gap: 12px; }
+.VPFeatures .items {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+
+.VPFeatures .item {
+  width: auto !important;
+  padding: 0;
+}
 
 .VPFeature {
   min-height: 100%;
